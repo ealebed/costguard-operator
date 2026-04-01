@@ -85,7 +85,6 @@ debug.test
 **/*.zip
 
 # Project-specific
-**/test/
 **/*-bundle.yaml
 *.pem
 *.b64

@@ -27,3 +27,20 @@ repos:
         - --args=--disable-rule=terraform_deprecated_lookup
         - --args=--disable-rule=terraform_unused_declarations
         - --args=--disable-rule=terraform_deprecated_index
+  - repo: local
+    hooks:
+      - id: gofmt
+        name: gofmt
+        entry: gofmt -w
+        language: system
+        files: \.go$
+      - id: make-lint
+        name: make lint
+        entry: make lint
+        language: system
+        pass_filenames: false
+      - id: make-test
+        name: make test
+        entry: make test
+        language: system
+        pass_filenames: false
