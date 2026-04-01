@@ -1,0 +1,29 @@
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+        args: [--unsafe]  # Allow multiple documents (Kubernetes manifests)
+        exclude: |
+          (?x)^(
+            terraform/.*\.tf$
+          )
+      - id: check-added-large-files
+      - id: check-json
+      - id: check-toml
+      - id: check-merge-conflict
+      - id: detect-private-key
+  - repo: https://github.com/antonbabenko/pre-commit-terraform
+    rev: "v1.105.0"
+    hooks:
+      - id: terraform_fmt
+      - id: terraform_tflint
+        args:
+        - --args=--disable-rule=terraform_required_providers
+        - --args=--disable-rule=terraform_required_version
+        - --args=--disable-rule=terraform_typed_variables
+        - --args=--disable-rule=terraform_deprecated_lookup
+        - --args=--disable-rule=terraform_unused_declarations
+        - --args=--disable-rule=terraform_deprecated_index

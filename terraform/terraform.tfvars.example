@@ -1,0 +1,21 @@
+project_id          = "my-gcp-project-id"
+billing_account_id  = "000000-000000-000000"
+region              = "europe-west1"
+zones               = ["europe-west1-b", "europe-west1-c"]
+cluster_name        = "costguard-gke"
+network_name        = "costguard-vpc"
+subnet_name         = "costguard-subnet"
+subnet_cidr         = "10.10.0.0/20"
+pods_range_name     = "pods-range"
+pods_range_cidr     = "10.20.0.0/14"
+services_range_name = "services-range"
+services_range_cidr = "10.24.0.0/20"
+
+operator_namespace = "costguard-operator-system"
+operator_ksa_name  = "costguard-operator-controller-manager"
+
+billing_dataset_id       = "gcp_billing_export"
+billing_dataset_location = "EU"
+
+artifact_registry_repository_id = "costguard-images"
+artifact_registry_format        = "DOCKER"
