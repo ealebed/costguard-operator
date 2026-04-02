@@ -20,8 +20,10 @@ import (
 	"context"
 	"fmt"
 	"maps"
+	"strconv"
 	"time"
 
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
@@ -45,6 +47,11 @@ type BudgetNamespaceReconciler struct {
 const (
 	resourceQuotaName = "costguard-quota"
 	limitRangeName    = "costguard-limitrange"
+
+	// costguardExemptLabel skips scale-to-zero for a Deployment's pod template.
+	costguardExemptLabel = "ealebed.github.io/exempt"
+	// preScaleReplicasAnnotation stores the replica count before scale-to-zero (string int32).
+	preScaleReplicasAnnotation = "finops.ealebed.github.io/pre-scale-replicas"
 )
 
 // ttlDeleteGracePeriod is the delay between TTL expiry and deleting the managed Namespace.
@@ -57,6 +64,7 @@ const ttlDeleteGracePeriod = 10 * time.Second
 // +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=resourcequotas,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=limitranges,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;update;patch
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
@@ -80,11 +88,13 @@ func (r *BudgetNamespaceReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	now := time.Now()
 
 	var (
-		expired         bool
-		deleting        bool
-		expiresAt       *metav1.Time
-		deleteAfterTTL  time.Time
-		requeueAfterTTL time.Duration
+		expired          bool
+		deleting         bool
+		expiresAt        *metav1.Time
+		deleteAfterTTL   time.Time
+		requeueAfterTTL  time.Duration
+		quotaEvaluated   bool
+		quotaAtHardLimit bool
 	)
 
 	if budgetNamespace.Spec.TTL != "" {
@@ -254,6 +264,25 @@ func (r *BudgetNamespaceReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		}); err != nil {
 			return ctrl.Result{}, fmt.Errorf("apply LimitRange in namespace %q: %w", budgetNamespace.Spec.NamespaceName, err)
 		}
+
+		if shouldScaleDeploymentsToZero(&budgetNamespace.Spec) {
+			rq := &corev1.ResourceQuota{}
+			rqKey := client.ObjectKey{Namespace: budgetNamespace.Spec.NamespaceName, Name: resourceQuotaName}
+			if err := r.Get(ctx, rqKey, rq); err != nil {
+				return ctrl.Result{}, fmt.Errorf("get ResourceQuota %q for usage check: %w", resourceQuotaName, err)
+			}
+			quotaEvaluated = true
+			quotaAtHardLimit = quotaUsedAtOrOverHard(rq)
+			if quotaAtHardLimit {
+				if err := scaleDeploymentsToZero(ctx, r.Client, budgetNamespace.Spec.NamespaceName, "resource-quota"); err != nil {
+					return ctrl.Result{}, err
+				}
+			}
+		}
+	} else if expired && !deleting && shouldScaleDeploymentsToZero(&budgetNamespace.Spec) {
+		if err := scaleDeploymentsToZero(ctx, r.Client, budgetNamespace.Spec.NamespaceName, "ttl-grace"); err != nil {
+			return ctrl.Result{}, err
+		}
 	} else if deleting {
 		// TTL expired: delete the Namespace after grace period.
 		namespace := &corev1.Namespace{
@@ -302,6 +331,43 @@ func (r *BudgetNamespaceReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		}
 	}
 
+	switch {
+	case !shouldScaleDeploymentsToZero(&budgetNamespace.Spec):
+		apimeta.SetStatusCondition(&budgetNamespace.Status.Conditions, metav1.Condition{
+			Type:               "OverBudget",
+			Status:             metav1.ConditionFalse,
+			Reason:             "EnforcementDisabled",
+			Message:            "Scale-to-zero enforcement is disabled",
+			ObservedGeneration: budgetNamespace.Generation,
+		})
+	case quotaEvaluated:
+		if quotaAtHardLimit {
+			apimeta.SetStatusCondition(&budgetNamespace.Status.Conditions, metav1.Condition{
+				Type:               "OverBudget",
+				Status:             metav1.ConditionTrue,
+				Reason:             "ResourceQuotaAtOrOverHard",
+				Message:            "ResourceQuota usage is at or above a hard limit; non-exempt Deployments were scaled to zero",
+				ObservedGeneration: budgetNamespace.Generation,
+			})
+		} else {
+			apimeta.SetStatusCondition(&budgetNamespace.Status.Conditions, metav1.Condition{
+				Type:               "OverBudget",
+				Status:             metav1.ConditionFalse,
+				Reason:             "WithinResourceQuota",
+				Message:            "ResourceQuota usage is below hard limits",
+				ObservedGeneration: budgetNamespace.Generation,
+			})
+		}
+	case budgetNamespace.Spec.TTL != "" && expired:
+		apimeta.SetStatusCondition(&budgetNamespace.Status.Conditions, metav1.Condition{
+			Type:               "OverBudget",
+			Status:             metav1.ConditionFalse,
+			Reason:             "TTLExpired",
+			Message:            "Resource quota usage is not re-evaluated after TTL expiry",
+			ObservedGeneration: budgetNamespace.Generation,
+		})
+	}
+
 	apimeta.SetStatusCondition(&budgetNamespace.Status.Conditions, metav1.Condition{
 		Type:               "Ready",
 		Status:             readyStatus,
@@ -325,6 +391,71 @@ func (r *BudgetNamespaceReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		return ctrl.Result{RequeueAfter: requeueAfterTTL}, nil
 	}
 	return ctrl.Result{}, nil
+}
+
+func quotaUsedAtOrOverHard(rq *corev1.ResourceQuota) bool {
+	for name, hardQty := range rq.Spec.Hard {
+		usedQty, ok := rq.Status.Used[name]
+		if !ok {
+			continue
+		}
+		if usedQty.Cmp(hardQty) >= 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func shouldScaleDeploymentsToZero(spec *finopsv1alpha1.BudgetNamespaceSpec) bool {
+	enf := spec.Enforcement
+	if enf.Action == "None" {
+		return false
+	}
+	if !enf.Enabled {
+		return false
+	}
+	return enf.Action == "" || enf.Action == "ScaleToZero"
+}
+
+func scaleDeploymentsToZero(ctx context.Context, c client.Client, namespace, reason string) error {
+	logger := log.FromContext(ctx)
+	var list appsv1.DeploymentList
+	if err := c.List(ctx, &list, client.InNamespace(namespace)); err != nil {
+		return fmt.Errorf("list Deployments in namespace %q: %w", namespace, err)
+	}
+
+	for i := range list.Items {
+		deploy := &list.Items[i]
+
+		if deploy.Spec.Template.Labels != nil && deploy.Spec.Template.Labels[costguardExemptLabel] == "true" {
+			continue
+		}
+
+		replicas := int32(1)
+		if deploy.Spec.Replicas != nil {
+			replicas = *deploy.Spec.Replicas
+		}
+		if replicas == 0 {
+			continue
+		}
+
+		patch := client.MergeFrom(deploy.DeepCopy())
+		if deploy.Annotations == nil {
+			deploy.Annotations = map[string]string{}
+		}
+		if _, ok := deploy.Annotations[preScaleReplicasAnnotation]; !ok {
+			deploy.Annotations[preScaleReplicasAnnotation] = strconv.FormatInt(int64(replicas), 10)
+		}
+		zero := int32(0)
+		deploy.Spec.Replicas = &zero
+
+		if err := c.Patch(ctx, deploy, patch); err != nil {
+			return fmt.Errorf("scale Deployment %q/%s to zero: %w", namespace, deploy.Name, err)
+		}
+		logger.Info("scaled Deployment to zero", "reason", reason, "namespace", namespace, "deployment", deploy.Name)
+	}
+
+	return nil
 }
 
 // SetupWithManager sets up the controller with the Manager.

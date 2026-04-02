@@ -18,9 +18,12 @@ package controller
 
 import (
 	"context"
+	"maps"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -257,6 +260,190 @@ var _ = Describe("BudgetNamespace Controller", func() {
 			By("cleanup")
 			// Ignore cleanup errors; controller may race.
 			_ = k8sClient.Delete(ctx, expiredBudgetNamespace)
+		})
+
+		It("should scale Deployments to zero during TTL grace when enforcement requests ScaleToZero", func() {
+			const graceCRName = "test-resource-grace-scale"
+			const graceManagedNS = "managed-test-namespace-grace"
+
+			replicas := int32(2)
+			By("creating the managed Namespace and a Deployment")
+			Expect(k8sClient.Create(ctx, &corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{Name: graceManagedNS},
+			})).To(Succeed())
+
+			Expect(k8sClient.Create(ctx, &appsv1.Deployment{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "workload",
+					Namespace: graceManagedNS,
+				},
+				Spec: appsv1.DeploymentSpec{
+					Replicas: &replicas,
+					Selector: &metav1.LabelSelector{
+						MatchLabels: map[string]string{"app": "workload"},
+					},
+					Template: corev1.PodTemplateSpec{
+						ObjectMeta: metav1.ObjectMeta{
+							Labels: map[string]string{"app": "workload"},
+						},
+						Spec: corev1.PodSpec{
+							Containers: []corev1.Container{{
+								Name:  "c",
+								Image: "pause:latest",
+							}},
+						},
+					},
+				},
+			})).To(Succeed())
+
+			By("creating BudgetNamespace with short TTL and scale-to-zero enforcement")
+			graceBN := &finopsv1alpha1.BudgetNamespace{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      graceCRName,
+					Namespace: "default",
+				},
+				Spec: finopsv1alpha1.BudgetNamespaceSpec{
+					NamespaceName: graceManagedNS,
+					TTL:           "1s",
+					Enforcement: finopsv1alpha1.BudgetNamespaceEnforcementSpec{
+						Enabled: true,
+						Action:  "ScaleToZero",
+					},
+					Quota: finopsv1alpha1.BudgetNamespaceQuotaSpec{
+						CPU:                    "1",
+						Memory:                 "1Gi",
+						Storage:                "10Gi",
+						PersistentVolumeClaims: 1,
+						Pods:                   5,
+					},
+					Defaults: finopsv1alpha1.BudgetNamespaceDefaultsSpec{
+						RequestCPU:    "100m",
+						RequestMemory: "128Mi",
+						LimitCPU:      "250m",
+						LimitMemory:   "256Mi",
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, graceBN)).To(Succeed())
+
+			By("waiting until TTL expired but grace period not elapsed")
+			time.Sleep(2 * time.Second)
+
+			rec := &BudgetNamespaceReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := rec.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: graceCRName, Namespace: "default"},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			deploy := &appsv1.Deployment{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "workload", Namespace: graceManagedNS}, deploy)).To(Succeed())
+			Expect(deploy.Spec.Replicas).NotTo(BeNil())
+			Expect(*deploy.Spec.Replicas).To(Equal(int32(0)))
+			Expect(deploy.Annotations["finops.ealebed.github.io/pre-scale-replicas"]).To(Equal("2"))
+
+			By("cleanup")
+			_ = k8sClient.Delete(ctx, graceBN)
+			_ = k8sClient.Delete(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: graceManagedNS}})
+		})
+
+		It("should scale Deployments to zero when ResourceQuota usage reaches hard limits", func() {
+			const quotaCRName = "test-resource-quota-scale"
+			const quotaManagedNS = "managed-quota-rq-ns"
+
+			replicas := int32(2)
+			Expect(k8sClient.Create(ctx, &corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{Name: quotaManagedNS},
+			})).To(Succeed())
+
+			quotaBN := &finopsv1alpha1.BudgetNamespace{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      quotaCRName,
+					Namespace: "default",
+				},
+				Spec: finopsv1alpha1.BudgetNamespaceSpec{
+					NamespaceName: quotaManagedNS,
+					TTL:           "1000h",
+					Enforcement: finopsv1alpha1.BudgetNamespaceEnforcementSpec{
+						Enabled: true,
+						Action:  "ScaleToZero",
+					},
+					Quota: finopsv1alpha1.BudgetNamespaceQuotaSpec{
+						CPU:                    "1",
+						Memory:                 "1Gi",
+						Storage:                "10Gi",
+						PersistentVolumeClaims: 1,
+						Pods:                   5,
+					},
+					Defaults: finopsv1alpha1.BudgetNamespaceDefaultsSpec{
+						RequestCPU:    "100m",
+						RequestMemory: "128Mi",
+						LimitCPU:      "250m",
+						LimitMemory:   "256Mi",
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, quotaBN)).To(Succeed())
+
+			rec := &BudgetNamespaceReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := rec.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: quotaCRName, Namespace: "default"},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(k8sClient.Create(ctx, &appsv1.Deployment{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "workload",
+					Namespace: quotaManagedNS,
+				},
+				Spec: appsv1.DeploymentSpec{
+					Replicas: &replicas,
+					Selector: &metav1.LabelSelector{
+						MatchLabels: map[string]string{"app": "workload"},
+					},
+					Template: corev1.PodTemplateSpec{
+						ObjectMeta: metav1.ObjectMeta{
+							Labels: map[string]string{"app": "workload"},
+						},
+						Spec: corev1.PodSpec{
+							Containers: []corev1.Container{{
+								Name:  "c",
+								Image: "pause:latest",
+							}},
+						},
+					},
+				},
+			})).To(Succeed())
+
+			rq := &corev1.ResourceQuota{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: resourceQuotaName, Namespace: quotaManagedNS,
+			}, rq)).To(Succeed())
+			used := make(corev1.ResourceList, len(rq.Spec.Hard))
+			maps.Copy(used, rq.Spec.Hard)
+			rq.Status.Used = used
+			Expect(k8sClient.Status().Update(ctx, rq)).To(Succeed())
+
+			_, err = rec.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: quotaCRName, Namespace: "default"},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			deploy := &appsv1.Deployment{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "workload", Namespace: quotaManagedNS}, deploy)).To(Succeed())
+			Expect(deploy.Spec.Replicas).NotTo(BeNil())
+			Expect(*deploy.Spec.Replicas).To(Equal(int32(0)))
+			Expect(deploy.Annotations["finops.ealebed.github.io/pre-scale-replicas"]).To(Equal("2"))
+
+			reconciled := &finopsv1alpha1.BudgetNamespace{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: quotaCRName, Namespace: "default"}, reconciled)).To(Succeed())
+			ob := meta.FindStatusCondition(reconciled.Status.Conditions, "OverBudget")
+			Expect(ob).NotTo(BeNil())
+			Expect(ob.Status).To(Equal(metav1.ConditionTrue))
+			Expect(ob.Reason).To(Equal("ResourceQuotaAtOrOverHard"))
+
+			By("cleanup")
+			_ = k8sClient.Delete(ctx, quotaBN)
+			_ = k8sClient.Delete(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: quotaManagedNS}})
 		})
 	})
 })

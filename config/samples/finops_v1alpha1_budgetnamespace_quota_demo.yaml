@@ -1,0 +1,41 @@
+# BudgetNamespace tuned for manual quota / scale-to-zero testing (tight pod budget).
+# Apply this CR, then create a Deployment in the target namespace with enough replicas
+# or aggregate requests to hit ResourceQuota hard limits; the operator reconciles and
+# scales non-exempt Deployments to zero when usage is at or above any hard limit.
+#
+# Example follow-up (after CR is Ready):
+#   kubectl -n demo-quota-ns create deployment stress --image=registry.k8s.io/pause:3.9 --replicas=1
+#
+# Compare with finops_v1alpha1_budgetnamespace.yaml (standard sandbox, 72h TTL).
+apiVersion: finops.ealebed.github.io/v1alpha1
+kind: BudgetNamespace
+metadata:
+  labels:
+    app.kubernetes.io/name: costguard-operator
+    app.kubernetes.io/managed-by: kustomize
+  name: budgetnamespace-quota-demo
+spec:
+  namespaceName: demo-quota-ns
+  labels:
+    ealebed.github.io/team: platform
+    ealebed.github.io/env: dev
+    ealebed.github.io/cost-center: sandbox
+    ealebed.github.io/sample: quota-demo
+  annotations:
+    ealebed.github.io/owner: ealebed
+  quota:
+    cpu: "200m"
+    memory: "256Mi"
+    storage: "10Gi"
+    persistentVolumeClaims: 3
+    pods: 1
+  defaults:
+    requestCPU: "100m"
+    requestMemory: "128Mi"
+    limitCPU: "200m"
+    limitMemory: "256Mi"
+  # Long TTL: primary behaviour under test is quota-driven enforcement, not expiry.
+  ttl: 720h
+  enforcement:
+    enabled: true
+    action: ScaleToZero
