@@ -174,5 +174,89 @@ var _ = Describe("BudgetNamespace Controller", func() {
 			Expect(readyCondition.Status).To(Equal(metav1.ConditionTrue))
 			Expect(readyCondition.Reason).To(Equal("NamespaceReady"))
 		})
+
+		It("should delete the namespace when TTL is expired and grace elapsed", func() {
+			const expiredCRName = "test-resource-expired"
+			const expiredManagedNamespaceName = "managed-test-namespace-expired"
+
+			By("creating the managed Namespace")
+			expiredNamespace := &corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: expiredManagedNamespaceName,
+				},
+			}
+			Expect(k8sClient.Create(ctx, expiredNamespace)).To(Succeed())
+
+			By("creating the BudgetNamespace with TTL already expired")
+			expiredBudgetNamespace := &finopsv1alpha1.BudgetNamespace{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      expiredCRName,
+					Namespace: "default",
+				},
+				Spec: finopsv1alpha1.BudgetNamespaceSpec{
+					NamespaceName: expiredManagedNamespaceName,
+					TTL:           "-1h",
+					Quota: finopsv1alpha1.BudgetNamespaceQuotaSpec{
+						CPU:                    "1",
+						Memory:                 "1Gi",
+						Storage:                "10Gi",
+						PersistentVolumeClaims: 1,
+						Pods:                   5,
+					},
+					Defaults: finopsv1alpha1.BudgetNamespaceDefaultsSpec{
+						RequestCPU:    "100m",
+						RequestMemory: "128Mi",
+						LimitCPU:      "250m",
+						LimitMemory:   "256Mi",
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, expiredBudgetNamespace)).To(Succeed())
+
+			By("reconciling")
+			controllerReconciler := &BudgetNamespaceReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+			}
+
+			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{
+					Name:      expiredCRName,
+					Namespace: "default",
+				},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("verifying namespace deletion started")
+			managedNs := &corev1.Namespace{}
+			err = k8sClient.Get(ctx, types.NamespacedName{Name: expiredManagedNamespaceName}, managedNs)
+			if err != nil && errors.IsNotFound(err) {
+				// Namespace already gone; acceptable for envtest.
+			} else {
+				Expect(err).NotTo(HaveOccurred())
+				Expect(managedNs.DeletionTimestamp).NotTo(BeNil())
+			}
+
+			By("verifying status conditions")
+			reconciled := &finopsv1alpha1.BudgetNamespace{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name:      expiredCRName,
+				Namespace: "default",
+			}, reconciled)).To(Succeed())
+
+			expiredCondition := meta.FindStatusCondition(reconciled.Status.Conditions, "Expired")
+			Expect(expiredCondition).NotTo(BeNil())
+			Expect(expiredCondition.Status).To(Equal(metav1.ConditionTrue))
+			Expect(expiredCondition.Reason).To(Equal("TTLExpired"))
+
+			readyCondition := meta.FindStatusCondition(reconciled.Status.Conditions, "Ready")
+			Expect(readyCondition).NotTo(BeNil())
+			Expect(readyCondition.Status).To(Equal(metav1.ConditionFalse))
+			Expect(readyCondition.Reason).To(Equal("TTLExpired"))
+
+			By("cleanup")
+			// Ignore cleanup errors; controller may race.
+			_ = k8sClient.Delete(ctx, expiredBudgetNamespace)
+		})
 	})
 })
