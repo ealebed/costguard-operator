@@ -41,6 +41,6 @@ repos:
         pass_filenames: false
       - id: make-test
         name: make test
-        entry: make test
+        entry: bash -c "make setup-envtest && go test ./..."
         language: system
         pass_filenames: false

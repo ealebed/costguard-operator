@@ -24,6 +24,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
+	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
@@ -55,6 +56,12 @@ var _ = Describe("BudgetNamespace Controller", func() {
 					},
 					Spec: finopsv1alpha1.BudgetNamespaceSpec{
 						NamespaceName: "managed-test-namespace",
+						Labels: map[string]string{
+							"ealebed.github.io/team": "platform",
+						},
+						Annotations: map[string]string{
+							"ealebed.github.io/owner": "ealebed",
+						},
 						Quota: finopsv1alpha1.BudgetNamespaceQuotaSpec{
 							CPU:                    "1",
 							Memory:                 "1Gi",
@@ -68,6 +75,7 @@ var _ = Describe("BudgetNamespace Controller", func() {
 							LimitCPU:      "250m",
 							LimitMemory:   "256Mi",
 						},
+						TTL: "2h",
 					},
 				}
 				Expect(k8sClient.Create(ctx, resource)).To(Succeed())
@@ -98,10 +106,68 @@ var _ = Describe("BudgetNamespace Controller", func() {
 			namespace := &corev1.Namespace{}
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "managed-test-namespace"}, namespace)).To(Succeed())
 
+			Expect(namespace.Labels["ealebed.github.io/team"]).To(Equal("platform"))
+			Expect(namespace.Annotations["ealebed.github.io/owner"]).To(Equal("ealebed"))
+
+			resourceQuota := &corev1.ResourceQuota{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name:      "costguard-quota",
+				Namespace: "managed-test-namespace",
+			}, resourceQuota)).To(Succeed())
+			expectedCPU := resource.MustParse("1")
+			qtyCPU := resourceQuota.Spec.Hard["requests.cpu"]
+			Expect((&qtyCPU).Cmp(expectedCPU)).To(Equal(0))
+
+			expectedMemory := resource.MustParse("1Gi")
+			qtyMemory := resourceQuota.Spec.Hard["requests.memory"]
+			Expect((&qtyMemory).Cmp(expectedMemory)).To(Equal(0))
+
+			expectedStorage := resource.MustParse("10Gi")
+			qtyStorage := resourceQuota.Spec.Hard["requests.storage"]
+			Expect((&qtyStorage).Cmp(expectedStorage)).To(Equal(0))
+
+			expectedPVCs := resource.MustParse("1")
+			qtyPVCs := resourceQuota.Spec.Hard["persistentvolumeclaims"]
+			Expect((&qtyPVCs).Cmp(expectedPVCs)).To(Equal(0))
+
+			expectedPods := resource.MustParse("5")
+			qtyPods := resourceQuota.Spec.Hard["pods"]
+			Expect((&qtyPods).Cmp(expectedPods)).To(Equal(0))
+
+			limitRange := &corev1.LimitRange{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name:      "costguard-limitrange",
+				Namespace: "managed-test-namespace",
+			}, limitRange)).To(Succeed())
+			Expect(limitRange.Spec.Limits).To(HaveLen(1))
+			item := limitRange.Spec.Limits[0]
+			Expect(item.Type).To(Equal(corev1.LimitTypeContainer))
+
+			expectedReqCPU := resource.MustParse("100m")
+			qtyReqCPU := item.DefaultRequest["cpu"]
+			Expect((&qtyReqCPU).Cmp(expectedReqCPU)).To(Equal(0))
+
+			expectedReqMemory := resource.MustParse("128Mi")
+			qtyReqMemory := item.DefaultRequest["memory"]
+			Expect((&qtyReqMemory).Cmp(expectedReqMemory)).To(Equal(0))
+
+			expectedLimitCPU := resource.MustParse("250m")
+			qtyLimitCPU := item.Default["cpu"]
+			Expect((&qtyLimitCPU).Cmp(expectedLimitCPU)).To(Equal(0))
+
+			expectedLimitMemory := resource.MustParse("256Mi")
+			qtyLimitMemory := item.Default["memory"]
+			Expect((&qtyLimitMemory).Cmp(expectedLimitMemory)).To(Equal(0))
+
 			reconciled := &finopsv1alpha1.BudgetNamespace{}
 			Expect(k8sClient.Get(ctx, typeNamespacedName, reconciled)).To(Succeed())
 			Expect(reconciled.Status.ManagedNamespace).To(Equal("managed-test-namespace"))
 			Expect(reconciled.Status.ObservedGeneration).To(Equal(reconciled.Generation))
+			Expect(reconciled.Status.ExpiresAt).NotTo(BeNil())
+			expiredCondition := meta.FindStatusCondition(reconciled.Status.Conditions, "Expired")
+			Expect(expiredCondition).NotTo(BeNil())
+			Expect(expiredCondition.Status).To(Equal(metav1.ConditionFalse))
+			Expect(expiredCondition.Reason).To(Equal("TTLActive"))
 			Expect(reconciled.Status.Conditions).NotTo(BeEmpty())
 			readyCondition := meta.FindStatusCondition(reconciled.Status.Conditions, "Ready")
 			Expect(readyCondition).NotTo(BeNil())

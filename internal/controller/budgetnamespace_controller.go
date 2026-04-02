@@ -19,10 +19,13 @@ package controller
 import (
 	"context"
 	"fmt"
+	"maps"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -39,10 +42,17 @@ type BudgetNamespaceReconciler struct {
 	Scheme *runtime.Scheme
 }
 
+const (
+	resourceQuotaName = "costguard-quota"
+	limitRangeName    = "costguard-limitrange"
+)
+
 // +kubebuilder:rbac:groups=finops.ealebed.github.io,resources=budgetnamespaces,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=finops.ealebed.github.io,resources=budgetnamespaces/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=finops.ealebed.github.io,resources=budgetnamespaces/finalizers,verbs=update
 // +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;list;watch;create;update;patch
+// +kubebuilder:rbac:groups="",resources=resourcequotas,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups="",resources=limitranges,verbs=get;list;watch;create;update;patch;delete
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
@@ -68,19 +78,203 @@ func (r *BudgetNamespaceReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	}
 
 	_, err := controllerutil.CreateOrPatch(ctx, r.Client, namespace, func() error {
+		// Merge desired labels/annotations into the (possibly existing) Namespace.
+		// Operator semantics: ensure the keys from spec are present with the desired values.
+		if budgetNamespace.Spec.Labels != nil {
+			if namespace.Labels == nil {
+				namespace.Labels = make(map[string]string, len(budgetNamespace.Spec.Labels))
+			}
+			maps.Copy(namespace.Labels, budgetNamespace.Spec.Labels)
+		}
+
+		if budgetNamespace.Spec.Annotations != nil {
+			if namespace.Annotations == nil {
+				namespace.Annotations = make(map[string]string, len(budgetNamespace.Spec.Annotations))
+			}
+			maps.Copy(namespace.Annotations, budgetNamespace.Spec.Annotations)
+		}
+
 		return nil
 	})
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("ensure namespace %q: %w", budgetNamespace.Spec.NamespaceName, err)
 	}
 
+	// Apply ResourceQuota and LimitRange so the namespace is budget-safe.
+	// We interpret `spec.quota` as request-based hard quotas, because GKE cost allocation
+	// attributes costs based on requests.
+	requestCPU, err := resource.ParseQuantity(budgetNamespace.Spec.Quota.CPU)
+	if err != nil {
+		return ctrl.Result{}, fmt.Errorf("parse quota.cpu: %w", err)
+	}
+	requestMemory, err := resource.ParseQuantity(budgetNamespace.Spec.Quota.Memory)
+	if err != nil {
+		return ctrl.Result{}, fmt.Errorf("parse quota.memory: %w", err)
+	}
+	requestStorage, err := resource.ParseQuantity(budgetNamespace.Spec.Quota.Storage)
+	if err != nil {
+		return ctrl.Result{}, fmt.Errorf("parse quota.storage: %w", err)
+	}
+	pvcCount := resource.MustParse(fmt.Sprintf("%d", budgetNamespace.Spec.Quota.PersistentVolumeClaims))
+	podCount := resource.MustParse(fmt.Sprintf("%d", budgetNamespace.Spec.Quota.Pods))
+
+	resourceQuota := &corev1.ResourceQuota{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      resourceQuotaName,
+			Namespace: budgetNamespace.Spec.NamespaceName,
+		},
+		Spec: corev1.ResourceQuotaSpec{
+			Hard: corev1.ResourceList{
+				"requests.cpu":           requestCPU,
+				"requests.memory":        requestMemory,
+				"requests.storage":       requestStorage,
+				"persistentvolumeclaims": pvcCount,
+				"pods":                   podCount,
+			},
+		},
+	}
+
+	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, resourceQuota, func() error {
+		resourceQuota.Spec.Hard = corev1.ResourceList{
+			"requests.cpu":           requestCPU,
+			"requests.memory":        requestMemory,
+			"requests.storage":       requestStorage,
+			"persistentvolumeclaims": pvcCount,
+			"pods":                   podCount,
+		}
+		return nil
+	}); err != nil {
+		return ctrl.Result{}, fmt.Errorf("apply ResourceQuota in namespace %q: %w", budgetNamespace.Spec.NamespaceName, err)
+	}
+
+	requestCPUDefault, err := resource.ParseQuantity(budgetNamespace.Spec.Defaults.RequestCPU)
+	if err != nil {
+		return ctrl.Result{}, fmt.Errorf("parse defaults.requestCPU: %w", err)
+	}
+	requestMemoryDefault, err := resource.ParseQuantity(budgetNamespace.Spec.Defaults.RequestMemory)
+	if err != nil {
+		return ctrl.Result{}, fmt.Errorf("parse defaults.requestMemory: %w", err)
+	}
+	limitCPUDefault, err := resource.ParseQuantity(budgetNamespace.Spec.Defaults.LimitCPU)
+	if err != nil {
+		return ctrl.Result{}, fmt.Errorf("parse defaults.limitCPU: %w", err)
+	}
+	limitMemoryDefault, err := resource.ParseQuantity(budgetNamespace.Spec.Defaults.LimitMemory)
+	if err != nil {
+		return ctrl.Result{}, fmt.Errorf("parse defaults.limitMemory: %w", err)
+	}
+
+	limitRange := &corev1.LimitRange{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      limitRangeName,
+			Namespace: budgetNamespace.Spec.NamespaceName,
+		},
+		Spec: corev1.LimitRangeSpec{
+			Limits: []corev1.LimitRangeItem{
+				{
+					Type: corev1.LimitTypeContainer,
+					DefaultRequest: corev1.ResourceList{
+						"cpu":    requestCPUDefault,
+						"memory": requestMemoryDefault,
+					},
+					Default: corev1.ResourceList{
+						"cpu":    limitCPUDefault,
+						"memory": limitMemoryDefault,
+					},
+				},
+			},
+		},
+	}
+
+	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, limitRange, func() error {
+		limitRange.Spec.Limits = []corev1.LimitRangeItem{
+			{
+				Type: corev1.LimitTypeContainer,
+				DefaultRequest: corev1.ResourceList{
+					"cpu":    requestCPUDefault,
+					"memory": requestMemoryDefault,
+				},
+				Default: corev1.ResourceList{
+					"cpu":    limitCPUDefault,
+					"memory": limitMemoryDefault,
+				},
+			},
+		}
+		return nil
+	}); err != nil {
+		return ctrl.Result{}, fmt.Errorf("apply LimitRange in namespace %q: %w", budgetNamespace.Spec.NamespaceName, err)
+	}
+
+	var (
+		expired         bool
+		expiresAt       *metav1.Time
+		requeueAfterTTL time.Duration
+	)
+
+	if budgetNamespace.Spec.TTL != "" {
+		ttlDuration, err := time.ParseDuration(budgetNamespace.Spec.TTL)
+		if err != nil {
+			return ctrl.Result{}, fmt.Errorf("parse spec.ttl %q: %w", budgetNamespace.Spec.TTL, err)
+		}
+
+		// TTL is computed from the custom resource creation timestamp.
+		// This keeps behavior deterministic and avoids needing extra spec fields.
+		// Note: creationTimestamp is always set on persisted objects by the apiserver.
+		expiry := budgetNamespace.CreationTimestamp.Add(ttlDuration)
+		expiresAt = &metav1.Time{Time: expiry}
+
+		now := time.Now()
+		if !now.Before(expiry) {
+			expired = true
+		}
+
+		// Requeue shortly before/at the expiry time so we update the status
+		// even if the BudgetNamespace spec hasn't changed.
+		timeUntilExpiry := time.Until(expiry)
+		if expired {
+			requeueAfterTTL = 10 * time.Second
+		} else {
+			// Clamp so we don't sleep for extremely long durations in v1alpha1.
+			// (Also helps keep the controller responsive.)
+			requeueAfterTTL = min(timeUntilExpiry, 10*time.Minute)
+		}
+
+		apimeta.SetStatusCondition(&budgetNamespace.Status.Conditions, metav1.Condition{
+			Type:               "Expired",
+			Status:             metav1.ConditionFalse,
+			Reason:             "TTLActive",
+			Message:            "TTL is active",
+			ObservedGeneration: budgetNamespace.Generation,
+		})
+		if expired {
+			apimeta.SetStatusCondition(&budgetNamespace.Status.Conditions, metav1.Condition{
+				Type:               "Expired",
+				Status:             metav1.ConditionTrue,
+				Reason:             "TTLExpired",
+				Message:            fmt.Sprintf("TTL expired at %s", expiry.UTC().Format(time.RFC3339)),
+				ObservedGeneration: budgetNamespace.Generation,
+			})
+		}
+	}
+
 	budgetNamespace.Status.ObservedGeneration = budgetNamespace.Generation
 	budgetNamespace.Status.ManagedNamespace = budgetNamespace.Spec.NamespaceName
+	budgetNamespace.Status.ExpiresAt = expiresAt
+
+	readyStatus := metav1.ConditionTrue
+	readyReason := "NamespaceReady"
+	readyMessage := fmt.Sprintf("Namespace %q is present", budgetNamespace.Spec.NamespaceName)
+	if expired {
+		readyStatus = metav1.ConditionFalse
+		readyReason = "TTLExpired"
+		readyMessage = fmt.Sprintf("Namespace %q is expired by TTL", budgetNamespace.Spec.NamespaceName)
+	}
+
 	apimeta.SetStatusCondition(&budgetNamespace.Status.Conditions, metav1.Condition{
 		Type:               "Ready",
-		Status:             metav1.ConditionTrue,
-		Reason:             "NamespaceReady",
-		Message:            fmt.Sprintf("Namespace %q is present", budgetNamespace.Spec.NamespaceName),
+		Status:             readyStatus,
+		Reason:             readyReason,
+		Message:            readyMessage,
 		ObservedGeneration: budgetNamespace.Generation,
 	})
 
@@ -95,6 +289,10 @@ func (r *BudgetNamespaceReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 
 	logger.Info("reconciled BudgetNamespace", "budgetNamespace", req.NamespacedName, "managedNamespace", budgetNamespace.Spec.NamespaceName)
 
+	// If we configured a TTL requeue, use it; otherwise reconcile normally.
+	if requeueAfterTTL > 0 {
+		return ctrl.Result{RequeueAfter: requeueAfterTTL}, nil
+	}
 	return ctrl.Result{}, nil
 }
 
