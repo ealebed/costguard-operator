@@ -54,7 +54,7 @@ const ttlDeleteGracePeriod = 10 * time.Second
 // +kubebuilder:rbac:groups=finops.ealebed.github.io,resources=budgetnamespaces,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=finops.ealebed.github.io,resources=budgetnamespaces/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=finops.ealebed.github.io,resources=budgetnamespaces/finalizers,verbs=update
-// +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;list;watch;create;update;patch
+// +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=resourcequotas,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=limitranges,verbs=get;list;watch;create;update;patch;delete
 

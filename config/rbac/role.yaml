@@ -8,21 +8,11 @@ rules:
   - ""
   resources:
   - limitranges
+  - namespaces
   - resourcequotas
   verbs:
   - create
   - delete
-  - get
-  - list
-  - patch
-  - update
-  - watch
-- apiGroups:
-  - ""
-  resources:
-  - namespaces
-  verbs:
-  - create
   - get
   - list
   - patch
