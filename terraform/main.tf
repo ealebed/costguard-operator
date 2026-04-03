@@ -44,6 +44,13 @@ module "gke" {
   deletion_protection    = false
   enable_cost_allocation = true
 
+  # "Usage metering" (a.k.a. Resource Usage export) is required for GKE billing export
+  # to include the richer namespace attribution labels used for namespace-level cost.
+  # The GKE module only enables the metering block when resource_usage_export_dataset_id != "".
+  resource_usage_export_dataset_id   = var.billing_dataset_id
+  enable_network_egress_export       = false
+  enable_resource_consumption_export = true
+
   http_load_balancing        = true
   horizontal_pod_autoscaling = true
   network_policy             = false
