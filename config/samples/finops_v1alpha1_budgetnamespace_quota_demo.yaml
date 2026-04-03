@@ -39,3 +39,6 @@ spec:
   enforcement:
     enabled: true
     action: ScaleToZero
+    # after quota usage is below limits, restore prior replica counts (waits enforcementCooldown after scale-down)
+    restoreOnRecovery: true
+    enforcementCooldown: 2m

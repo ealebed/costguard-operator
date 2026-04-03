@@ -168,6 +168,10 @@ func (in *BudgetNamespaceStatus) DeepCopyInto(out *BudgetNamespaceStatus) {
 		in, out := &in.ExpiresAt, &out.ExpiresAt
 		*out = (*in).DeepCopy()
 	}
+	if in.LastEnforcementAt != nil {
+		in, out := &in.LastEnforcementAt, &out.LastEnforcementAt
+		*out = (*in).DeepCopy()
+	}
 	if in.Conditions != nil {
 		in, out := &in.Conditions, &out.Conditions
 		*out = make([]v1.Condition, len(*in))

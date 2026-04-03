@@ -30,10 +30,14 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	ctrlpredicate "sigs.k8s.io/controller-runtime/pkg/predicate"
 
 	finopsv1alpha1 "github.com/ealebed/costguard-operator/api/v1alpha1"
 )
@@ -41,7 +45,8 @@ import (
 // BudgetNamespaceReconciler reconciles a BudgetNamespace object
 type BudgetNamespaceReconciler struct {
 	client.Client
-	Scheme *runtime.Scheme
+	Scheme   *runtime.Scheme
+	Recorder record.EventRecorder
 }
 
 const (
@@ -49,7 +54,8 @@ const (
 	limitRangeName    = "costguard-limitrange"
 
 	// costguardExemptLabel skips scale-to-zero for a Deployment's pod template.
-	costguardExemptLabel = "ealebed.github.io/exempt"
+	costguardExemptLabel      = "ealebed.github.io/exempt"
+	costguardExemptLabelValue = "true"
 	// preScaleReplicasAnnotation stores the replica count before scale-to-zero (string int32).
 	preScaleReplicasAnnotation = "finops.ealebed.github.io/pre-scale-replicas"
 )
@@ -58,6 +64,10 @@ const (
 // In v1alpha1 we keep this fixed to avoid schema churn; later we can make it configurable.
 const ttlDeleteGracePeriod = 10 * time.Second
 
+// enforcementPollInterval bounds how long we wait before re-reading ResourceQuota status when needed.
+// ResourceQuota is also watched for quicker reconciliation after usage changes.
+const enforcementPollInterval = 30 * time.Second
+
 // +kubebuilder:rbac:groups=finops.ealebed.github.io,resources=budgetnamespaces,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=finops.ealebed.github.io,resources=budgetnamespaces/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=finops.ealebed.github.io,resources=budgetnamespaces/finalizers,verbs=update
@@ -65,6 +75,7 @@ const ttlDeleteGracePeriod = 10 * time.Second
 // +kubebuilder:rbac:groups="",resources=resourcequotas,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=limitranges,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;update;patch
+// +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
@@ -84,6 +95,10 @@ func (r *BudgetNamespaceReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	if err := r.Get(ctx, req.NamespacedName, &budgetNamespace); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
+
+	lastEnfAt := budgetNamespace.Status.LastEnforcementAt
+	lastEnfOp := budgetNamespace.Status.LastEnforcementOperation
+	var recoveryDeferred bool
 
 	now := time.Now()
 
@@ -266,6 +281,12 @@ func (r *BudgetNamespaceReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		}
 
 		if shouldScaleDeploymentsToZero(&budgetNamespace.Spec) {
+			cooldown, err := enforcementCooldown(&budgetNamespace.Spec)
+			if err != nil {
+				r.recordWarning(&budgetNamespace, "InvalidEnforcementCooldown", err.Error())
+				return ctrl.Result{}, err
+			}
+
 			rq := &corev1.ResourceQuota{}
 			rqKey := client.ObjectKey{Namespace: budgetNamespace.Spec.NamespaceName, Name: resourceQuotaName}
 			if err := r.Get(ctx, rqKey, rq); err != nil {
@@ -273,15 +294,59 @@ func (r *BudgetNamespaceReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 			}
 			quotaEvaluated = true
 			quotaAtHardLimit = quotaUsedAtOrOverHard(rq)
+
+			scaledCount := 0
 			if quotaAtHardLimit {
-				if err := scaleDeploymentsToZero(ctx, r.Client, budgetNamespace.Spec.NamespaceName, "resource-quota"); err != nil {
+				scaledCount, err = scaleDeploymentsToZero(ctx, r.Client, budgetNamespace.Spec.NamespaceName, "resource-quota")
+				if err != nil {
+					r.recordWarning(&budgetNamespace, "ScaleToZeroFailed", err.Error())
 					return ctrl.Result{}, err
+				}
+				if scaledCount > 0 {
+					t := metav1.Now()
+					lastEnfAt = &t
+					lastEnfOp = enforcementOpScaleToZero
+					r.recordNormal(&budgetNamespace, "ScaledToZero", fmt.Sprintf("Scaled %d Deployment(s) to zero (resource quota)", scaledCount))
+				}
+			} else if restoreOnRecoveryEnabled(&budgetNamespace.Spec) {
+				pending, err := deploymentsPendingRestore(ctx, r.Client, budgetNamespace.Spec.NamespaceName)
+				if err != nil {
+					return ctrl.Result{}, err
+				}
+				if pending {
+					if canRestoreAfterScaleDown(lastEnfOp, lastEnfAt, cooldown, now) {
+						restoredCount, err := restoreDeploymentsFromAnnotation(ctx, r.Client, budgetNamespace.Spec.NamespaceName)
+						if err != nil {
+							r.recordWarning(&budgetNamespace, "RestoreFailed", err.Error())
+							return ctrl.Result{}, err
+						}
+						if restoredCount > 0 {
+							t := metav1.Now()
+							lastEnfAt = &t
+							lastEnfOp = enforcementOpRestore
+							r.recordNormal(&budgetNamespace, "RestoredReplicas",
+								fmt.Sprintf("Restored %d Deployment(s) from saved replica counts", restoredCount))
+						}
+					} else {
+						recoveryDeferred = true
+						remaining := max(lastEnfAt.Add(cooldown).Sub(now), time.Duration(0))
+						msg := fmt.Sprintf("Restore deferred for %s (enforcement cooldown after scale-to-zero)", remaining.Truncate(time.Second))
+						r.recordNormal(&budgetNamespace, "RecoveryDeferred", msg)
+					}
 				}
 			}
 		}
 	} else if expired && !deleting && shouldScaleDeploymentsToZero(&budgetNamespace.Spec) {
-		if err := scaleDeploymentsToZero(ctx, r.Client, budgetNamespace.Spec.NamespaceName, "ttl-grace"); err != nil {
+		n, err := scaleDeploymentsToZero(ctx, r.Client, budgetNamespace.Spec.NamespaceName, "ttl-grace")
+		if err != nil {
+			r.recordWarning(&budgetNamespace, "ScaleToZeroFailed", err.Error())
 			return ctrl.Result{}, err
+		}
+		if n > 0 {
+			t := metav1.Now()
+			lastEnfAt = &t
+			lastEnfOp = enforcementOpScaleToZero
+			r.recordNormal(&budgetNamespace, "ScaledToZero", fmt.Sprintf("Scaled %d Deployment(s) to zero (TTL grace)", n))
 		}
 	} else if deleting {
 		// TTL expired: delete the Namespace after grace period.
@@ -300,6 +365,8 @@ func (r *BudgetNamespaceReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	budgetNamespace.Status.ObservedGeneration = budgetNamespace.Generation
 	budgetNamespace.Status.ManagedNamespace = budgetNamespace.Spec.NamespaceName
 	budgetNamespace.Status.ExpiresAt = expiresAt
+	budgetNamespace.Status.LastEnforcementAt = lastEnfAt
+	budgetNamespace.Status.LastEnforcementOperation = lastEnfOp
 
 	readyStatus := metav1.ConditionTrue
 	readyReason := "NamespaceReady"
@@ -368,6 +435,33 @@ func (r *BudgetNamespaceReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		})
 	}
 
+	switch {
+	case !shouldScaleDeploymentsToZero(&budgetNamespace.Spec) || !quotaEvaluated:
+		apimeta.SetStatusCondition(&budgetNamespace.Status.Conditions, metav1.Condition{
+			Type:               "EnforcementRecoveryDeferred",
+			Status:             metav1.ConditionFalse,
+			Reason:             "NotApplicable",
+			Message:            "Enforcement recovery deferral is not tracked in this state",
+			ObservedGeneration: budgetNamespace.Generation,
+		})
+	case recoveryDeferred:
+		apimeta.SetStatusCondition(&budgetNamespace.Status.Conditions, metav1.Condition{
+			Type:               "EnforcementRecoveryDeferred",
+			Status:             metav1.ConditionTrue,
+			Reason:             "AwaitingEnforcementCooldown",
+			Message:            "Restore is waiting for enforcement cooldown after scale-to-zero",
+			ObservedGeneration: budgetNamespace.Generation,
+		})
+	default:
+		apimeta.SetStatusCondition(&budgetNamespace.Status.Conditions, metav1.Condition{
+			Type:               "EnforcementRecoveryDeferred",
+			Status:             metav1.ConditionFalse,
+			Reason:             "NotDeferred",
+			Message:            "No restore action is blocked by enforcement cooldown",
+			ObservedGeneration: budgetNamespace.Generation,
+		})
+	}
+
 	apimeta.SetStatusCondition(&budgetNamespace.Status.Conditions, metav1.Condition{
 		Type:               "Ready",
 		Status:             readyStatus,
@@ -387,8 +481,15 @@ func (r *BudgetNamespaceReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 
 	logger.Info("reconciled BudgetNamespace", "budgetNamespace", req.NamespacedName, "managedNamespace", budgetNamespace.Spec.NamespaceName)
 
-	if requeueAfterTTL > 0 {
-		return ctrl.Result{RequeueAfter: requeueAfterTTL}, nil
+	requeueAfter := requeueAfterTTL
+	if shouldScaleDeploymentsToZero(&budgetNamespace.Spec) && !expired {
+		if requeueAfter == 0 || enforcementPollInterval < requeueAfter {
+			requeueAfter = enforcementPollInterval
+		}
+	}
+
+	if requeueAfter > 0 {
+		return ctrl.Result{RequeueAfter: requeueAfter}, nil
 	}
 	return ctrl.Result{}, nil
 }
@@ -417,17 +518,18 @@ func shouldScaleDeploymentsToZero(spec *finopsv1alpha1.BudgetNamespaceSpec) bool
 	return enf.Action == "" || enf.Action == "ScaleToZero"
 }
 
-func scaleDeploymentsToZero(ctx context.Context, c client.Client, namespace, reason string) error {
+func scaleDeploymentsToZero(ctx context.Context, c client.Client, namespace, reason string) (int, error) {
 	logger := log.FromContext(ctx)
 	var list appsv1.DeploymentList
 	if err := c.List(ctx, &list, client.InNamespace(namespace)); err != nil {
-		return fmt.Errorf("list Deployments in namespace %q: %w", namespace, err)
+		return 0, fmt.Errorf("list Deployments in namespace %q: %w", namespace, err)
 	}
 
+	n := 0
 	for i := range list.Items {
 		deploy := &list.Items[i]
 
-		if deploy.Spec.Template.Labels != nil && deploy.Spec.Template.Labels[costguardExemptLabel] == "true" {
+		if deploy.Spec.Template.Labels != nil && deploy.Spec.Template.Labels[costguardExemptLabel] == costguardExemptLabelValue {
 			continue
 		}
 
@@ -450,18 +552,39 @@ func scaleDeploymentsToZero(ctx context.Context, c client.Client, namespace, rea
 		deploy.Spec.Replicas = &zero
 
 		if err := c.Patch(ctx, deploy, patch); err != nil {
-			return fmt.Errorf("scale Deployment %q/%s to zero: %w", namespace, deploy.Name, err)
+			return n, fmt.Errorf("scale Deployment %q/%s to zero: %w", namespace, deploy.Name, err)
 		}
+		n++
 		logger.Info("scaled Deployment to zero", "reason", reason, "namespace", namespace, "deployment", deploy.Name)
 	}
 
-	return nil
+	return n, nil
+}
+
+func (r *BudgetNamespaceReconciler) recordNormal(bn *finopsv1alpha1.BudgetNamespace, reason, message string) {
+	if r.Recorder != nil {
+		r.Recorder.Event(bn, corev1.EventTypeNormal, reason, message)
+	}
+}
+
+func (r *BudgetNamespaceReconciler) recordWarning(bn *finopsv1alpha1.BudgetNamespace, reason, message string) {
+	if r.Recorder != nil {
+		r.Recorder.Event(bn, corev1.EventTypeWarning, reason, message)
+	}
 }
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *BudgetNamespaceReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&finopsv1alpha1.BudgetNamespace{}).
+		Watches(
+			&corev1.ResourceQuota{},
+			handler.EnqueueRequestsFromMapFunc(r.resourceQuotaToRequests),
+			builder.WithPredicates(ctrlpredicate.NewPredicateFuncs(func(o client.Object) bool {
+				rq, ok := o.(*corev1.ResourceQuota)
+				return ok && rq.Name == resourceQuotaName
+			})),
+		).
 		Named("budgetnamespace").
 		Complete(r)
 }

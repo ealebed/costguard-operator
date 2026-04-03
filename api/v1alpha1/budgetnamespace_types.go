@@ -64,6 +64,16 @@ type BudgetNamespaceEnforcementSpec struct {
 	// +kubebuilder:validation:Enum=None;ScaleToZero
 	// +kubebuilder:default:=ScaleToZero
 	Action string `json:"action,omitempty"`
+
+	// restoreOnRecovery when true restores Deployments from finops.ealebed.github.io/pre-scale-replicas
+	// after ResourceQuota usage is below hard limits, waiting enforcementCooldown after a scale-to-zero.
+	// +kubebuilder:default:=false
+	RestoreOnRecovery bool `json:"restoreOnRecovery,omitempty"`
+
+	// enforcementCooldown is a Go duration (e.g. 2m, 30s) to wait after scale-to-zero before allowing restore.
+	// Empty defaults to 2m.
+	// +optional
+	EnforcementCooldown string `json:"enforcementCooldown,omitempty"`
 }
 
 // BudgetNamespaceSpec defines the desired state of BudgetNamespace
@@ -109,6 +119,15 @@ type BudgetNamespaceStatus struct {
 	// expiresAt is the computed expiry timestamp derived from spec.ttl.
 	// +optional
 	ExpiresAt *metav1.Time `json:"expiresAt,omitempty"`
+
+	// lastEnforcementAt records the last time enforcement scaled Deployments up or down.
+	// +optional
+	LastEnforcementAt *metav1.Time `json:"lastEnforcementAt,omitempty"`
+
+	// lastEnforcementOperation is ScaleToZero or Restore; meaningful when lastEnforcementAt is set.
+	// +optional
+	// +kubebuilder:validation:Enum=ScaleToZero;Restore
+	LastEnforcementOperation string `json:"lastEnforcementOperation,omitempty"`
 
 	// For Kubernetes API conventions, see:
 	// https://github.com/kubernetes/community/blob/master/contributors/devel/sig-architecture/api-conventions.md#typical-status-properties

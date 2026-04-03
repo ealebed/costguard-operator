@@ -78,6 +78,17 @@ spec:
                   enabled:
                     default: true
                     type: boolean
+                  enforcementCooldown:
+                    description: |-
+                      enforcementCooldown is a Go duration (e.g. 2m, 30s) to wait after scale-to-zero before allowing restore.
+                      Empty defaults to 2m.
+                    type: string
+                  restoreOnRecovery:
+                    default: false
+                    description: |-
+                      restoreOnRecovery when true restores Deployments from finops.ealebed.github.io/pre-scale-replicas
+                      after ResourceQuota usage is below hard limits, waiting enforcementCooldown after a scale-to-zero.
+                    type: boolean
                 type: object
               labels:
                 additionalProperties:
@@ -202,6 +213,18 @@ spec:
                 description: expiresAt is the computed expiry timestamp derived from
                   spec.ttl.
                 format: date-time
+                type: string
+              lastEnforcementAt:
+                description: lastEnforcementAt records the last time enforcement scaled
+                  Deployments up or down.
+                format: date-time
+                type: string
+              lastEnforcementOperation:
+                description: lastEnforcementOperation is ScaleToZero or Restore; meaningful
+                  when lastEnforcementAt is set.
+                enum:
+                - ScaleToZero
+                - Restore
                 type: string
               managedNamespace:
                 description: managedNamespace is the namespace currently managed for

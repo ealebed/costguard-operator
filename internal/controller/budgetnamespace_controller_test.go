@@ -445,5 +445,123 @@ var _ = Describe("BudgetNamespace Controller", func() {
 			_ = k8sClient.Delete(ctx, quotaBN)
 			_ = k8sClient.Delete(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: quotaManagedNS}})
 		})
+
+		It("should restore Deployments when quota is below hard and restoreOnRecovery is set", func() {
+			const restoreCRName = "test-resource-quota-restore"
+			const restoreManagedNS = "managed-quota-restore-ns"
+
+			replicas := int32(2)
+			Expect(k8sClient.Create(ctx, &corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{Name: restoreManagedNS},
+			})).To(Succeed())
+
+			restoreBN := &finopsv1alpha1.BudgetNamespace{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      restoreCRName,
+					Namespace: "default",
+				},
+				Spec: finopsv1alpha1.BudgetNamespaceSpec{
+					NamespaceName: restoreManagedNS,
+					TTL:           "1000h",
+					Enforcement: finopsv1alpha1.BudgetNamespaceEnforcementSpec{
+						Enabled:             true,
+						Action:              "ScaleToZero",
+						RestoreOnRecovery:   true,
+						EnforcementCooldown: "0s",
+					},
+					Quota: finopsv1alpha1.BudgetNamespaceQuotaSpec{
+						CPU:                    "1",
+						Memory:                 "1Gi",
+						Storage:                "10Gi",
+						PersistentVolumeClaims: 1,
+						Pods:                   5,
+					},
+					Defaults: finopsv1alpha1.BudgetNamespaceDefaultsSpec{
+						RequestCPU:    "100m",
+						RequestMemory: "128Mi",
+						LimitCPU:      "250m",
+						LimitMemory:   "256Mi",
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, restoreBN)).To(Succeed())
+
+			rec := &BudgetNamespaceReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := rec.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: restoreCRName, Namespace: "default"},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(k8sClient.Create(ctx, &appsv1.Deployment{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "workload",
+					Namespace: restoreManagedNS,
+				},
+				Spec: appsv1.DeploymentSpec{
+					Replicas: &replicas,
+					Selector: &metav1.LabelSelector{
+						MatchLabels: map[string]string{"app": "workload"},
+					},
+					Template: corev1.PodTemplateSpec{
+						ObjectMeta: metav1.ObjectMeta{
+							Labels: map[string]string{"app": "workload"},
+						},
+						Spec: corev1.PodSpec{
+							Containers: []corev1.Container{{
+								Name:  "c",
+								Image: "pause:latest",
+							}},
+						},
+					},
+				},
+			})).To(Succeed())
+
+			rq := &corev1.ResourceQuota{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: resourceQuotaName, Namespace: restoreManagedNS,
+			}, rq)).To(Succeed())
+			usedHigh := make(corev1.ResourceList, len(rq.Spec.Hard))
+			maps.Copy(usedHigh, rq.Spec.Hard)
+			rq.Status.Used = usedHigh
+			Expect(k8sClient.Status().Update(ctx, rq)).To(Succeed())
+
+			_, err = rec.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: restoreCRName, Namespace: "default"},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			deploy := &appsv1.Deployment{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "workload", Namespace: restoreManagedNS}, deploy)).To(Succeed())
+			Expect(*deploy.Spec.Replicas).To(Equal(int32(0)))
+
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: resourceQuotaName, Namespace: restoreManagedNS,
+			}, rq)).To(Succeed())
+			rq.Status.Used = corev1.ResourceList{
+				"pods":                   resource.MustParse("0"),
+				"requests.cpu":           resource.MustParse("0"),
+				"requests.memory":        resource.MustParse("0"),
+				"requests.storage":       resource.MustParse("0"),
+				"persistentvolumeclaims": resource.MustParse("0"),
+			}
+			Expect(k8sClient.Status().Update(ctx, rq)).To(Succeed())
+
+			_, err = rec.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: restoreCRName, Namespace: "default"},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "workload", Namespace: restoreManagedNS}, deploy)).To(Succeed())
+			Expect(*deploy.Spec.Replicas).To(Equal(int32(2)))
+			Expect(deploy.Annotations).NotTo(HaveKey("finops.ealebed.github.io/pre-scale-replicas"))
+
+			reconciled := &finopsv1alpha1.BudgetNamespace{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: restoreCRName, Namespace: "default"}, reconciled)).To(Succeed())
+			Expect(reconciled.Status.LastEnforcementOperation).To(Equal("Restore"))
+
+			By("cleanup")
+			_ = k8sClient.Delete(ctx, restoreBN)
+			_ = k8sClient.Delete(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: restoreManagedNS}})
+		})
 	})
 })
