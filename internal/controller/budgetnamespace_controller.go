@@ -30,7 +30,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/client-go/tools/record"
+	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -46,7 +46,7 @@ import (
 type BudgetNamespaceReconciler struct {
 	client.Client
 	Scheme   *runtime.Scheme
-	Recorder record.EventRecorder
+	Recorder events.EventRecorder
 }
 
 const (
@@ -75,7 +75,8 @@ const enforcementPollInterval = 30 * time.Second
 // +kubebuilder:rbac:groups="",resources=resourcequotas,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=limitranges,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;update;patch
-// +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
+// Events: core v1 (legacy) and events.k8s.io/v1 (used by mgr.GetEventRecorder).
+// +kubebuilder:rbac:groups="";events.k8s.io,resources=events,verbs=create;patch;update
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
@@ -563,13 +564,14 @@ func scaleDeploymentsToZero(ctx context.Context, c client.Client, namespace, rea
 
 func (r *BudgetNamespaceReconciler) recordNormal(bn *finopsv1alpha1.BudgetNamespace, reason, message string) {
 	if r.Recorder != nil {
-		r.Recorder.Event(bn, corev1.EventTypeNormal, reason, message)
+		// events.k8s.io/v1 Event API: action mirrors reason when no finer-grained verb exists.
+		r.Recorder.Eventf(bn, nil, corev1.EventTypeNormal, reason, reason, "%s", message)
 	}
 }
 
 func (r *BudgetNamespaceReconciler) recordWarning(bn *finopsv1alpha1.BudgetNamespace, reason, message string) {
 	if r.Recorder != nil {
-		r.Recorder.Event(bn, corev1.EventTypeWarning, reason, message)
+		r.Recorder.Eventf(bn, nil, corev1.EventTypeWarning, reason, reason, "%s", message)
 	}
 }
 

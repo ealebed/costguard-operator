@@ -181,7 +181,7 @@ func main() {
 	if err := (&controller.BudgetNamespaceReconciler{
 		Client:   mgr.GetClient(),
 		Scheme:   mgr.GetScheme(),
-		Recorder: mgr.GetEventRecorderFor("budgetnamespace-controller"),
+		Recorder: mgr.GetEventRecorder("budgetnamespace-controller"),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "BudgetNamespace")
 		os.Exit(1)
