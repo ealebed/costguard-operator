@@ -65,8 +65,9 @@ type BudgetNamespaceEnforcementSpec struct {
 	// +kubebuilder:default:=ScaleToZero
 	Action string `json:"action,omitempty"`
 
-	// restoreOnRecovery when true restores Deployments from finops.ealebed.github.io/pre-scale-replicas
-	// after ResourceQuota usage is below hard limits, waiting enforcementCooldown after a scale-to-zero.
+	// restoreOnRecovery when true restores Deployments and StatefulSets from finops.ealebed.github.io/pre-scale-replicas
+	// after ResourceQuota usage is below hard limits and (when costBudget is enabled) observed spend is below maxSpendUSD,
+	// waiting enforcementCooldown after a scale-to-zero.
 	// +kubebuilder:default:=false
 	RestoreOnRecovery bool `json:"restoreOnRecovery,omitempty"`
 
@@ -74,6 +75,34 @@ type BudgetNamespaceEnforcementSpec struct {
 	// Empty defaults to 2m.
 	// +optional
 	EnforcementCooldown string `json:"enforcementCooldown,omitempty"`
+}
+
+// BudgetNamespaceCostBudgetSpec configures dollar-based enforcement using a GCP billing export table in BigQuery.
+type BudgetNamespaceCostBudgetSpec struct {
+	// enabled turns on periodic BigQuery spend checks for the managed namespace.
+	// +kubebuilder:default:=false
+	Enabled bool `json:"enabled,omitempty"`
+
+	// billingExportTable is a fully-qualified table ID: project.dataset.table (detailed billing export with resource labels).
+	// +kubebuilder:validation:MinLength=1
+	BillingExportTable string `json:"billingExportTable,omitempty"`
+
+	// clusterName is the value of the goog-k8s-cluster-name label on billing rows (GKE cluster name).
+	// +kubebuilder:validation:MinLength=1
+	ClusterName string `json:"clusterName,omitempty"`
+
+	// maxSpendUSD is a decimal threshold in USD (e.g. "1" or "1.50"). When SUM(cost) in the lookback window is at or above
+	// this value, non-exempt Deployments and StatefulSets are scaled to zero (if enforcement is enabled).
+	// +kubebuilder:validation:MinLength=1
+	MaxSpendUSD string `json:"maxSpendUSD,omitempty"`
+
+	// lookbackWindow is a Go duration (e.g. 168h, 24h) for billing usage_start_time filtering. Empty defaults to 168h.
+	// +optional
+	LookbackWindow string `json:"lookbackWindow,omitempty"`
+
+	// queryInterval is the minimum time between BigQuery queries for this resource (e.g. 1h). Empty defaults to 1h.
+	// +optional
+	QueryInterval string `json:"queryInterval,omitempty"`
 }
 
 // BudgetNamespaceSpec defines the desired state of BudgetNamespace
@@ -104,6 +133,11 @@ type BudgetNamespaceSpec struct {
 	// enforcement defines how budget violations are handled.
 	// +optional
 	Enforcement BudgetNamespaceEnforcementSpec `json:"enforcement,omitempty"`
+
+	// costBudget optionally evaluates billed USD from BigQuery and triggers the same enforcement as ResourceQuota breaches.
+	// Requires the operator to run with credentials that can query the billing export table (for example GKE Workload Identity).
+	// +optional
+	CostBudget *BudgetNamespaceCostBudgetSpec `json:"costBudget,omitempty"`
 }
 
 // BudgetNamespaceStatus defines the observed state of BudgetNamespace.
@@ -128,6 +162,14 @@ type BudgetNamespaceStatus struct {
 	// +optional
 	// +kubebuilder:validation:Enum=ScaleToZero;Restore
 	LastEnforcementOperation string `json:"lastEnforcementOperation,omitempty"`
+
+	// lastCostQueryAt is when the controller last queried BigQuery for cost budget evaluation.
+	// +optional
+	LastCostQueryAt *metav1.Time `json:"lastCostQueryAt,omitempty"`
+
+	// lastObservedSpendUSD is the total USD from the last successful BigQuery cost query for this BudgetNamespace.
+	// +optional
+	LastObservedSpendUSD string `json:"lastObservedSpendUSD,omitempty"`
 
 	// For Kubernetes API conventions, see:
 	// https://github.com/kubernetes/community/blob/master/contributors/devel/sig-architecture/api-conventions.md#typical-status-properties

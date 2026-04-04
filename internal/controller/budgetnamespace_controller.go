@@ -20,10 +20,8 @@ import (
 	"context"
 	"fmt"
 	"maps"
-	"strconv"
 	"time"
 
-	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
@@ -45,8 +43,9 @@ import (
 // BudgetNamespaceReconciler reconciles a BudgetNamespace object
 type BudgetNamespaceReconciler struct {
 	client.Client
-	Scheme   *runtime.Scheme
-	Recorder events.EventRecorder
+	Scheme       *runtime.Scheme
+	Recorder     events.EventRecorder
+	SpendQuerier NamespaceSpendQuerier
 }
 
 const (
@@ -75,6 +74,7 @@ const enforcementPollInterval = 30 * time.Second
 // +kubebuilder:rbac:groups="",resources=resourcequotas,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=limitranges,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;update;patch
+// +kubebuilder:rbac:groups=apps,resources=statefulsets,verbs=get;list;watch;update;patch
 // Events: core v1 (legacy) and events.k8s.io/v1 (used by mgr.GetEventRecorder).
 // +kubebuilder:rbac:groups="";events.k8s.io,resources=events,verbs=create;patch;update
 
@@ -97,6 +97,10 @@ func (r *BudgetNamespaceReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
+	if err := validateCostBudgetSpec(&budgetNamespace.Spec); err != nil {
+		return ctrl.Result{}, err
+	}
+
 	lastEnfAt := budgetNamespace.Status.LastEnforcementAt
 	lastEnfOp := budgetNamespace.Status.LastEnforcementOperation
 	var recoveryDeferred bool
@@ -104,13 +108,15 @@ func (r *BudgetNamespaceReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	now := time.Now()
 
 	var (
-		expired          bool
-		deleting         bool
-		expiresAt        *metav1.Time
-		deleteAfterTTL   time.Time
-		requeueAfterTTL  time.Duration
-		quotaEvaluated   bool
-		quotaAtHardLimit bool
+		expired             bool
+		deleting            bool
+		expiresAt           *metav1.Time
+		deleteAfterTTL      time.Time
+		requeueAfterTTL     time.Duration
+		quotaEvaluated      bool
+		quotaAtHardLimit    bool
+		costBudgetEvaluated bool
+		costOverBudget      bool
 	)
 
 	if budgetNamespace.Spec.TTL != "" {
@@ -296,9 +302,26 @@ func (r *BudgetNamespaceReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 			quotaEvaluated = true
 			quotaAtHardLimit = quotaUsedAtOrOverHard(rq)
 
+			var costSpend float64
+			if costBudgetEnabled(&budgetNamespace.Spec) {
+				costSpend, err = r.resolveNamespaceSpendUSD(ctx, &budgetNamespace, now)
+				if err != nil {
+					r.recordWarning(&budgetNamespace, "CostBudgetQueryFailed", err.Error())
+					return ctrl.Result{}, err
+				}
+				costBudgetEvaluated = true
+				maxUSD, perr := costBudgetMaxUSD(budgetNamespace.Spec.CostBudget)
+				if perr != nil {
+					return ctrl.Result{}, perr
+				}
+				costOverBudget = spendAtOrOverMax(costSpend, maxUSD)
+			}
+
+			atBudgetRisk := quotaAtHardLimit || costOverBudget
 			scaledCount := 0
-			if quotaAtHardLimit {
-				scaledCount, err = scaleDeploymentsToZero(ctx, r.Client, budgetNamespace.Spec.NamespaceName, "resource-quota")
+			if atBudgetRisk {
+				reason := enforcementScaleReason(quotaAtHardLimit, costOverBudget)
+				scaledCount, err = scaleWorkloadsToZero(ctx, r.Client, budgetNamespace.Spec.NamespaceName, reason)
 				if err != nil {
 					r.recordWarning(&budgetNamespace, "ScaleToZeroFailed", err.Error())
 					return ctrl.Result{}, err
@@ -307,16 +330,23 @@ func (r *BudgetNamespaceReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 					t := metav1.Now()
 					lastEnfAt = &t
 					lastEnfOp = enforcementOpScaleToZero
-					r.recordNormal(&budgetNamespace, "ScaledToZero", fmt.Sprintf("Scaled %d Deployment(s) to zero (resource quota)", scaledCount))
+					r.recordNormal(&budgetNamespace, "ScaledToZero", fmt.Sprintf("Scaled %d workload(s) to zero (%s)", scaledCount, reason))
 				}
 			} else if restoreOnRecoveryEnabled(&budgetNamespace.Spec) {
-				pending, err := deploymentsPendingRestore(ctx, r.Client, budgetNamespace.Spec.NamespaceName)
+				pending, err := workloadsPendingRestore(ctx, r.Client, budgetNamespace.Spec.NamespaceName)
 				if err != nil {
 					return ctrl.Result{}, err
 				}
 				if pending {
-					if canRestoreAfterScaleDown(lastEnfOp, lastEnfAt, cooldown, now) {
-						restoredCount, err := restoreDeploymentsFromAnnotation(ctx, r.Client, budgetNamespace.Spec.NamespaceName)
+					okCost, err := withinCostBudgetForRestore(&budgetNamespace.Spec, costSpend)
+					if err != nil {
+						return ctrl.Result{}, err
+					}
+					if !okCost {
+						r.recordNormal(&budgetNamespace, "RecoveryDeferred",
+							"Restore deferred: billed spend is still at or above maxSpendUSD")
+					} else if canRestoreAfterScaleDown(lastEnfOp, lastEnfAt, cooldown, now) {
+						restoredCount, err := restoreScaledWorkloads(ctx, r.Client, budgetNamespace.Spec.NamespaceName)
 						if err != nil {
 							r.recordWarning(&budgetNamespace, "RestoreFailed", err.Error())
 							return ctrl.Result{}, err
@@ -326,7 +356,7 @@ func (r *BudgetNamespaceReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 							lastEnfAt = &t
 							lastEnfOp = enforcementOpRestore
 							r.recordNormal(&budgetNamespace, "RestoredReplicas",
-								fmt.Sprintf("Restored %d Deployment(s) from saved replica counts", restoredCount))
+								fmt.Sprintf("Restored %d workload(s) from saved replica counts", restoredCount))
 						}
 					} else {
 						recoveryDeferred = true
@@ -338,7 +368,7 @@ func (r *BudgetNamespaceReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 			}
 		}
 	} else if expired && !deleting && shouldScaleDeploymentsToZero(&budgetNamespace.Spec) {
-		n, err := scaleDeploymentsToZero(ctx, r.Client, budgetNamespace.Spec.NamespaceName, "ttl-grace")
+		n, err := scaleWorkloadsToZero(ctx, r.Client, budgetNamespace.Spec.NamespaceName, "ttl-grace")
 		if err != nil {
 			r.recordWarning(&budgetNamespace, "ScaleToZeroFailed", err.Error())
 			return ctrl.Result{}, err
@@ -347,7 +377,7 @@ func (r *BudgetNamespaceReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 			t := metav1.Now()
 			lastEnfAt = &t
 			lastEnfOp = enforcementOpScaleToZero
-			r.recordNormal(&budgetNamespace, "ScaledToZero", fmt.Sprintf("Scaled %d Deployment(s) to zero (TTL grace)", n))
+			r.recordNormal(&budgetNamespace, "ScaledToZero", fmt.Sprintf("Scaled %d workload(s) to zero (TTL grace)", n))
 		}
 	} else if deleting {
 		// TTL expired: delete the Namespace after grace period.
@@ -409,20 +439,26 @@ func (r *BudgetNamespaceReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 			ObservedGeneration: budgetNamespace.Generation,
 		})
 	case quotaEvaluated:
-		if quotaAtHardLimit {
+		budgetViolated := quotaAtHardLimit || costOverBudget
+		if budgetViolated {
+			reason, message := overBudgetReasonMessage(quotaAtHardLimit, costOverBudget)
 			apimeta.SetStatusCondition(&budgetNamespace.Status.Conditions, metav1.Condition{
 				Type:               "OverBudget",
 				Status:             metav1.ConditionTrue,
-				Reason:             "ResourceQuotaAtOrOverHard",
-				Message:            "ResourceQuota usage is at or above a hard limit; non-exempt Deployments were scaled to zero",
+				Reason:             reason,
+				Message:            message,
 				ObservedGeneration: budgetNamespace.Generation,
 			})
 		} else {
+			msg := "ResourceQuota usage is below hard limits"
+			if costBudgetEnabled(&budgetNamespace.Spec) && costBudgetEvaluated {
+				msg = "ResourceQuota usage is below hard limits and billed spend is below maxSpendUSD"
+			}
 			apimeta.SetStatusCondition(&budgetNamespace.Status.Conditions, metav1.Condition{
 				Type:               "OverBudget",
 				Status:             metav1.ConditionFalse,
-				Reason:             "WithinResourceQuota",
-				Message:            "ResourceQuota usage is below hard limits",
+				Reason:             "WithinBudget",
+				Message:            msg,
 				ObservedGeneration: budgetNamespace.Generation,
 			})
 		}
@@ -517,49 +553,6 @@ func shouldScaleDeploymentsToZero(spec *finopsv1alpha1.BudgetNamespaceSpec) bool
 		return false
 	}
 	return enf.Action == "" || enf.Action == "ScaleToZero"
-}
-
-func scaleDeploymentsToZero(ctx context.Context, c client.Client, namespace, reason string) (int, error) {
-	logger := log.FromContext(ctx)
-	var list appsv1.DeploymentList
-	if err := c.List(ctx, &list, client.InNamespace(namespace)); err != nil {
-		return 0, fmt.Errorf("list Deployments in namespace %q: %w", namespace, err)
-	}
-
-	n := 0
-	for i := range list.Items {
-		deploy := &list.Items[i]
-
-		if deploy.Spec.Template.Labels != nil && deploy.Spec.Template.Labels[costguardExemptLabel] == costguardExemptLabelValue {
-			continue
-		}
-
-		replicas := int32(1)
-		if deploy.Spec.Replicas != nil {
-			replicas = *deploy.Spec.Replicas
-		}
-		if replicas == 0 {
-			continue
-		}
-
-		patch := client.MergeFrom(deploy.DeepCopy())
-		if deploy.Annotations == nil {
-			deploy.Annotations = map[string]string{}
-		}
-		if _, ok := deploy.Annotations[preScaleReplicasAnnotation]; !ok {
-			deploy.Annotations[preScaleReplicasAnnotation] = strconv.FormatInt(int64(replicas), 10)
-		}
-		zero := int32(0)
-		deploy.Spec.Replicas = &zero
-
-		if err := c.Patch(ctx, deploy, patch); err != nil {
-			return n, fmt.Errorf("scale Deployment %q/%s to zero: %w", namespace, deploy.Name, err)
-		}
-		n++
-		logger.Info("scaled Deployment to zero", "reason", reason, "namespace", namespace, "deployment", deploy.Name)
-	}
-
-	return n, nil
 }
 
 func (r *BudgetNamespaceReconciler) recordNormal(bn *finopsv1alpha1.BudgetNamespace, reason, message string) {

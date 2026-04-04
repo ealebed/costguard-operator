@@ -1,0 +1,32 @@
+# Example: scale workloads to zero when billed namespace spend (BigQuery export) reaches maxSpendUSD.
+# Requires GKE Workload Identity (or other ADC) so the operator can run BigQuery jobs against the table.
+apiVersion: finops.ealebed.github.io/v1alpha1
+kind: BudgetNamespace
+metadata:
+  name: budgetnamespace-costalloc
+spec:
+  namespaceName: costalloc-test-ns
+  quota:
+    cpu: "2"
+    memory: "4Gi"
+    storage: "20Gi"
+    persistentVolumeClaims: 5
+    pods: 10
+  defaults:
+    requestCPU: "100m"
+    requestMemory: "128Mi"
+    limitCPU: "500m"
+    limitMemory: "512Mi"
+  ttl: 720h
+  enforcement:
+    enabled: true
+    action: ScaleToZero
+    restoreOnRecovery: true
+    enforcementCooldown: 2m
+  costBudget:
+    enabled: true
+    billingExportTable: ylebi-rnd.gcp_billing_export.gcp_billing_export_resource_v1_011BB4_25F476_819B61
+    clusterName: costguard-gke
+    maxSpendUSD: "1"
+    lookbackWindow: 168h
+    queryInterval: 1h

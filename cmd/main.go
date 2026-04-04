@@ -17,9 +17,12 @@ limitations under the License.
 package main
 
 import (
+	"context"
 	"crypto/tls"
 	"flag"
 	"os"
+
+	cloudbq "cloud.google.com/go/bigquery"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
 	// to ensure that exec-entrypoint and run can make use of them.
@@ -36,6 +39,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
 	finopsv1alpha1 "github.com/ealebed/costguard-operator/api/v1alpha1"
+	"github.com/ealebed/costguard-operator/internal/billing"
 	"github.com/ealebed/costguard-operator/internal/controller"
 	// +kubebuilder:scaffold:imports
 )
@@ -178,10 +182,20 @@ func main() {
 		os.Exit(1)
 	}
 
+	var spendQuerier controller.NamespaceSpendQuerier
+	bqClient, err := cloudbq.NewClient(context.Background(), "")
+	if err != nil {
+		setupLog.Error(err,
+			"BigQuery client init failed; BudgetNamespace with spec.costBudget.enabled will error until credentials work")
+	} else {
+		spendQuerier = billing.NewSpendQuerier(bqClient)
+	}
+
 	if err := (&controller.BudgetNamespaceReconciler{
-		Client:   mgr.GetClient(),
-		Scheme:   mgr.GetScheme(),
-		Recorder: mgr.GetEventRecorder("budgetnamespace-controller"),
+		Client:       mgr.GetClient(),
+		Scheme:       mgr.GetScheme(),
+		Recorder:     mgr.GetEventRecorder("budgetnamespace-controller"),
+		SpendQuerier: spendQuerier,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "BudgetNamespace")
 		os.Exit(1)

@@ -36,6 +36,15 @@ import (
 	finopsv1alpha1 "github.com/ealebed/costguard-operator/api/v1alpha1"
 )
 
+type fakeSpendQuerier struct {
+	v   float64
+	err error
+}
+
+func (f *fakeSpendQuerier) NamespaceSpendUSD(context.Context, string, string, string, time.Duration) (float64, error) {
+	return f.v, f.err
+}
+
 var _ = Describe("BudgetNamespace Controller", func() {
 	Context("When reconciling a resource", func() {
 		const resourceName = "test-resource"
@@ -562,6 +571,107 @@ var _ = Describe("BudgetNamespace Controller", func() {
 			By("cleanup")
 			_ = k8sClient.Delete(ctx, restoreBN)
 			_ = k8sClient.Delete(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: restoreManagedNS}})
+		})
+
+		It("should scale Deployments to zero when cost budget spend exceeds maxSpendUSD", func() {
+			const costCRName = "test-resource-cost-budget"
+			const costManagedNS = "managed-cost-budget-ns"
+
+			replicas := int32(2)
+			Expect(k8sClient.Create(ctx, &corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{Name: costManagedNS},
+			})).To(Succeed())
+
+			costBN := &finopsv1alpha1.BudgetNamespace{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      costCRName,
+					Namespace: "default",
+				},
+				Spec: finopsv1alpha1.BudgetNamespaceSpec{
+					NamespaceName: costManagedNS,
+					TTL:           "1000h",
+					Enforcement: finopsv1alpha1.BudgetNamespaceEnforcementSpec{
+						Enabled: true,
+						Action:  "ScaleToZero",
+					},
+					Quota: finopsv1alpha1.BudgetNamespaceQuotaSpec{
+						CPU:                    "1",
+						Memory:                 "1Gi",
+						Storage:                "10Gi",
+						PersistentVolumeClaims: 1,
+						Pods:                   5,
+					},
+					Defaults: finopsv1alpha1.BudgetNamespaceDefaultsSpec{
+						RequestCPU:    "100m",
+						RequestMemory: "128Mi",
+						LimitCPU:      "250m",
+						LimitMemory:   "256Mi",
+					},
+					CostBudget: &finopsv1alpha1.BudgetNamespaceCostBudgetSpec{
+						Enabled:            true,
+						BillingExportTable: "proj.dataset.table",
+						ClusterName:        "test-cluster",
+						MaxSpendUSD:        "1",
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, costBN)).To(Succeed())
+
+			rec := &BudgetNamespaceReconciler{
+				Client:       k8sClient,
+				Scheme:       k8sClient.Scheme(),
+				SpendQuerier: &fakeSpendQuerier{v: 2.0},
+			}
+			_, err := rec.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: costCRName, Namespace: "default"},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(k8sClient.Create(ctx, &appsv1.Deployment{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "workload",
+					Namespace: costManagedNS,
+				},
+				Spec: appsv1.DeploymentSpec{
+					Replicas: &replicas,
+					Selector: &metav1.LabelSelector{
+						MatchLabels: map[string]string{"app": "workload"},
+					},
+					Template: corev1.PodTemplateSpec{
+						ObjectMeta: metav1.ObjectMeta{
+							Labels: map[string]string{"app": "workload"},
+						},
+						Spec: corev1.PodSpec{
+							Containers: []corev1.Container{{
+								Name:  "c",
+								Image: "pause:latest",
+							}},
+						},
+					},
+				},
+			})).To(Succeed())
+
+			_, err = rec.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: costCRName, Namespace: "default"},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			deploy := &appsv1.Deployment{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "workload", Namespace: costManagedNS}, deploy)).To(Succeed())
+			Expect(deploy.Spec.Replicas).NotTo(BeNil())
+			Expect(*deploy.Spec.Replicas).To(Equal(int32(0)))
+			Expect(deploy.Annotations["finops.ealebed.github.io/pre-scale-replicas"]).To(Equal("2"))
+
+			reconciled := &finopsv1alpha1.BudgetNamespace{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: costCRName, Namespace: "default"}, reconciled)).To(Succeed())
+			ob := meta.FindStatusCondition(reconciled.Status.Conditions, "OverBudget")
+			Expect(ob).NotTo(BeNil())
+			Expect(ob.Status).To(Equal(metav1.ConditionTrue))
+			Expect(ob.Reason).To(Equal("CostBudgetExceeded"))
+
+			By("cleanup")
+			_ = k8sClient.Delete(ctx, costBN)
+			_ = k8sClient.Delete(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: costManagedNS}})
 		})
 	})
 })

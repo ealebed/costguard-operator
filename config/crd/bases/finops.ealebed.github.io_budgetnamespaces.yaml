@@ -44,6 +44,42 @@ spec:
                   type: string
                 description: annotations are applied to the managed namespace.
                 type: object
+              costBudget:
+                description: |-
+                  costBudget optionally evaluates billed USD from BigQuery and triggers the same enforcement as ResourceQuota breaches.
+                  Requires the operator to run with credentials that can query the billing export table (for example GKE Workload Identity).
+                properties:
+                  billingExportTable:
+                    description: 'billingExportTable is a fully-qualified table ID:
+                      project.dataset.table (detailed billing export with resource
+                      labels).'
+                    minLength: 1
+                    type: string
+                  clusterName:
+                    description: clusterName is the value of the goog-k8s-cluster-name
+                      label on billing rows (GKE cluster name).
+                    minLength: 1
+                    type: string
+                  enabled:
+                    default: false
+                    description: enabled turns on periodic BigQuery spend checks for
+                      the managed namespace.
+                    type: boolean
+                  lookbackWindow:
+                    description: lookbackWindow is a Go duration (e.g. 168h, 24h)
+                      for billing usage_start_time filtering. Empty defaults to 168h.
+                    type: string
+                  maxSpendUSD:
+                    description: |-
+                      maxSpendUSD is a decimal threshold in USD (e.g. "1" or "1.50"). When SUM(cost) in the lookback window is at or above
+                      this value, non-exempt Deployments and StatefulSets are scaled to zero (if enforcement is enabled).
+                    minLength: 1
+                    type: string
+                  queryInterval:
+                    description: queryInterval is the minimum time between BigQuery
+                      queries for this resource (e.g. 1h). Empty defaults to 1h.
+                    type: string
+                type: object
               defaults:
                 description: defaults defines default requests and limits for containers
                   in the managed namespace.
@@ -86,8 +122,9 @@ spec:
                   restoreOnRecovery:
                     default: false
                     description: |-
-                      restoreOnRecovery when true restores Deployments from finops.ealebed.github.io/pre-scale-replicas
-                      after ResourceQuota usage is below hard limits, waiting enforcementCooldown after a scale-to-zero.
+                      restoreOnRecovery when true restores Deployments and StatefulSets from finops.ealebed.github.io/pre-scale-replicas
+                      after ResourceQuota usage is below hard limits and (when costBudget is enabled) observed spend is below maxSpendUSD,
+                      waiting enforcementCooldown after a scale-to-zero.
                     type: boolean
                 type: object
               labels:
@@ -214,6 +251,11 @@ spec:
                   spec.ttl.
                 format: date-time
                 type: string
+              lastCostQueryAt:
+                description: lastCostQueryAt is when the controller last queried BigQuery
+                  for cost budget evaluation.
+                format: date-time
+                type: string
               lastEnforcementAt:
                 description: lastEnforcementAt records the last time enforcement scaled
                   Deployments up or down.
@@ -225,6 +267,10 @@ spec:
                 enum:
                 - ScaleToZero
                 - Restore
+                type: string
+              lastObservedSpendUSD:
+                description: lastObservedSpendUSD is the total USD from the last successful
+                  BigQuery cost query for this BudgetNamespace.
                 type: string
               managedNamespace:
                 description: managedNamespace is the namespace currently managed for
