@@ -27,6 +27,6 @@ spec:
     enabled: true
     billingExportTable: ylebi-rnd.gcp_billing_export.gcp_billing_export_resource_v1_011BB4_25F476_819B61
     clusterName: costguard-gke
-    maxSpendUSD: "1"
-    lookbackWindow: 168h
-    queryInterval: 1h
+    maxSpendUSD: "0.03"
+    lookbackWindow: 24h
+    queryInterval: 15h
