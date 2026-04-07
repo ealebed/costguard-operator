@@ -38,7 +38,14 @@ func validateTableRef(tableRef string) (project, dataset, table string, err erro
 }
 
 // NamespaceSpendUSD returns SUM(cost) in USD for rows labeled with the cluster and namespace.
-func (q *SpendQuerier) NamespaceSpendUSD(ctx context.Context, tableRef, clusterName, namespace string, lookback time.Duration) (float64, error) {
+func (q *SpendQuerier) NamespaceSpendUSD(
+	ctx context.Context,
+	tableRef,
+	clusterName,
+	namespace,
+	location string,
+	lookback time.Duration,
+) (float64, error) {
 	if q == nil || q.client == nil {
 		return 0, fmt.Errorf("bigquery client is not configured")
 	}
@@ -62,6 +69,9 @@ WHERE t.usage_start_time >= @start_ts
 		{Name: "start_ts", Value: start},
 		{Name: "cluster", Value: clusterName},
 		{Name: "namespace", Value: namespace},
+	}
+	if strings.TrimSpace(location) != "" {
+		qy.Location = strings.TrimSpace(location)
 	}
 
 	it, err := qy.Read(ctx)

@@ -55,6 +55,11 @@ spec:
                       labels).'
                     minLength: 1
                     type: string
+                  billingLocation:
+                    description: |-
+                      billingLocation is the BigQuery location for the billing dataset/job (for example EU or US).
+                      This must match the billing export dataset location.
+                    type: string
                   clusterName:
                     description: clusterName is the value of the goog-k8s-cluster-name
                       label on billing rows (GKE cluster name).

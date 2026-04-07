@@ -91,6 +91,11 @@ type BudgetNamespaceCostBudgetSpec struct {
 	// +kubebuilder:validation:MinLength=1
 	ClusterName string `json:"clusterName,omitempty"`
 
+	// billingLocation is the BigQuery location for the billing dataset/job (for example EU or US).
+	// This must match the billing export dataset location.
+	// +optional
+	BillingLocation string `json:"billingLocation,omitempty"`
+
 	// maxSpendUSD is a decimal threshold in USD (e.g. "1" or "1.50"). When SUM(cost) in the lookback window is at or above
 	// this value, non-exempt Deployments and StatefulSets are scaled to zero (if enforcement is enabled).
 	// +kubebuilder:validation:MinLength=1

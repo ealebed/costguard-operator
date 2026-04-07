@@ -41,7 +41,9 @@ type fakeSpendQuerier struct {
 	err error
 }
 
-func (f *fakeSpendQuerier) NamespaceSpendUSD(context.Context, string, string, string, time.Duration) (float64, error) {
+func (f *fakeSpendQuerier) NamespaceSpendUSD(
+	context.Context, string, string, string, string, time.Duration,
+) (float64, error) {
 	return f.v, f.err
 }
 

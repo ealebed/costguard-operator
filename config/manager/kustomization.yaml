@@ -5,4 +5,4 @@ kind: Kustomization
 images:
 - name: controller
   newName: europe-west1-docker.pkg.dev/ylebi-rnd/costguard-images/costguard-operator
-  newTag: dev-20260403060810
+  newTag: dev-20260407073303

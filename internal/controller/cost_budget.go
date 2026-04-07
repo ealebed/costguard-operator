@@ -20,7 +20,7 @@ const (
 
 // NamespaceSpendQuerier fetches billed USD for a namespace from BigQuery billing export.
 type NamespaceSpendQuerier interface {
-	NamespaceSpendUSD(ctx context.Context, tableRef, clusterName, namespace string, lookback time.Duration) (float64, error)
+	NamespaceSpendUSD(ctx context.Context, tableRef, clusterName, namespace, location string, lookback time.Duration) (float64, error)
 }
 
 func costBudgetEnabled(spec *finopsv1alpha1.BudgetNamespaceSpec) bool {
@@ -125,7 +125,14 @@ func (r *BudgetNamespaceReconciler) resolveNamespaceSpendUSD(ctx context.Context
 	}
 
 	lookback := costBudgetLookback(cb)
-	spend, err = r.SpendQuerier.NamespaceSpendUSD(ctx, cb.BillingExportTable, cb.ClusterName, bn.Spec.NamespaceName, lookback)
+	spend, err = r.SpendQuerier.NamespaceSpendUSD(
+		ctx,
+		cb.BillingExportTable,
+		cb.ClusterName,
+		bn.Spec.NamespaceName,
+		cb.BillingLocation,
+		lookback,
+	)
 	if err != nil {
 		return 0, err
 	}
