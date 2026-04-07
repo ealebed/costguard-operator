@@ -21,6 +21,7 @@ import (
 	"crypto/tls"
 	"flag"
 	"os"
+	"strings"
 
 	cloudbq "cloud.google.com/go/bigquery"
 
@@ -48,6 +49,15 @@ var (
 	scheme   = runtime.NewScheme()
 	setupLog = ctrl.Log.WithName("setup")
 )
+
+func firstNonEmptyEnv(keys ...string) string {
+	for _, k := range keys {
+		if v := strings.TrimSpace(os.Getenv(k)); v != "" {
+			return v
+		}
+	}
+	return ""
+}
 
 func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
@@ -183,11 +193,17 @@ func main() {
 	}
 
 	var spendQuerier controller.NamespaceSpendQuerier
-	bqClient, err := cloudbq.NewClient(context.Background(), "")
+	projectID := firstNonEmptyEnv("GOOGLE_CLOUD_PROJECT", "GCLOUD_PROJECT", "GCP_PROJECT")
+	bqClient, err := cloudbq.NewClient(context.Background(), projectID)
 	if err != nil {
 		setupLog.Error(err,
 			"BigQuery client init failed; BudgetNamespace with spec.costBudget.enabled will error until credentials work")
 	} else {
+		if projectID == "" {
+			setupLog.Info("BigQuery client initialized without explicit project; relying on ADC project detection")
+		} else {
+			setupLog.Info("BigQuery client initialized", "projectID", projectID)
+		}
 		spendQuerier = billing.NewSpendQuerier(bqClient)
 	}
 
