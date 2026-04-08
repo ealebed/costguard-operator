@@ -2,4 +2,5 @@
 resources:
 - finops_v1alpha1_budgetnamespace.yaml
 - finops_v1alpha1_budgetnamespace_quota_demo.yaml
+- finops_v1alpha1_budgetnamespace_cost_budget.yaml
 # +kubebuilder:scaffold:manifestskustomizesamples
