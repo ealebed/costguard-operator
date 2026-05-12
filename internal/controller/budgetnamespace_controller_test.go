@@ -36,6 +36,21 @@ import (
 	finopsv1alpha1 "github.com/ealebed/costguard-operator/api/v1alpha1"
 )
 
+const (
+	testBudgetCRNamespace        = "default"
+	testManagedNamespaceName     = "managed-test-namespace"
+	testQuotaMemory              = "1Gi"
+	testQuotaStorage             = "10Gi"
+	testDefaultsRequestCPU       = "100m"
+	testDefaultsRequestMemory    = "128Mi"
+	testDefaultsLimitCPU         = "250m"
+	testDefaultsLimitMemory      = "256Mi"
+	testWorkloadName             = "workload"
+	testWorkloadSelectorLabelKey = "app"
+	testContainerImage           = "pause:latest"
+	testLongTTL                  = "1000h"
+)
+
 type fakeSpendQuerier struct {
 	v   float64
 	err error
@@ -55,7 +70,7 @@ var _ = Describe("BudgetNamespace Controller", func() {
 
 		typeNamespacedName := types.NamespacedName{
 			Name:      resourceName,
-			Namespace: "default", // TODO(user):Modify as needed
+			Namespace: testBudgetCRNamespace, // TODO(user):Modify as needed
 		}
 		budgetnamespace := &finopsv1alpha1.BudgetNamespace{}
 
@@ -66,10 +81,10 @@ var _ = Describe("BudgetNamespace Controller", func() {
 				resource := &finopsv1alpha1.BudgetNamespace{
 					ObjectMeta: metav1.ObjectMeta{
 						Name:      resourceName,
-						Namespace: "default",
+						Namespace: testBudgetCRNamespace,
 					},
 					Spec: finopsv1alpha1.BudgetNamespaceSpec{
-						NamespaceName: "managed-test-namespace",
+						NamespaceName: testManagedNamespaceName,
 						Labels: map[string]string{
 							"ealebed.github.io/team": "platform",
 						},
@@ -78,16 +93,16 @@ var _ = Describe("BudgetNamespace Controller", func() {
 						},
 						Quota: finopsv1alpha1.BudgetNamespaceQuotaSpec{
 							CPU:                    "1",
-							Memory:                 "1Gi",
-							Storage:                "10Gi",
+							Memory:                 testQuotaMemory,
+							Storage:                testQuotaStorage,
 							PersistentVolumeClaims: 1,
 							Pods:                   5,
 						},
 						Defaults: finopsv1alpha1.BudgetNamespaceDefaultsSpec{
-							RequestCPU:    "100m",
-							RequestMemory: "128Mi",
-							LimitCPU:      "250m",
-							LimitMemory:   "256Mi",
+							RequestCPU:    testDefaultsRequestCPU,
+							RequestMemory: testDefaultsRequestMemory,
+							LimitCPU:      testDefaultsLimitCPU,
+							LimitMemory:   testDefaultsLimitMemory,
 						},
 						TTL: "2h",
 					},
@@ -118,7 +133,7 @@ var _ = Describe("BudgetNamespace Controller", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			namespace := &corev1.Namespace{}
-			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "managed-test-namespace"}, namespace)).To(Succeed())
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: testManagedNamespaceName}, namespace)).To(Succeed())
 
 			Expect(namespace.Labels["ealebed.github.io/team"]).To(Equal("platform"))
 			Expect(namespace.Annotations["ealebed.github.io/owner"]).To(Equal("ealebed"))
@@ -126,64 +141,64 @@ var _ = Describe("BudgetNamespace Controller", func() {
 			resourceQuota := &corev1.ResourceQuota{}
 			Expect(k8sClient.Get(ctx, types.NamespacedName{
 				Name:      "costguard-quota",
-				Namespace: "managed-test-namespace",
+				Namespace: testManagedNamespaceName,
 			}, resourceQuota)).To(Succeed())
 			expectedCPU := resource.MustParse("1")
-			qtyCPU := resourceQuota.Spec.Hard["requests.cpu"]
+			qtyCPU := resourceQuota.Spec.Hard[corev1.ResourceRequestsCPU]
 			Expect((&qtyCPU).Cmp(expectedCPU)).To(Equal(0))
 
 			expectedMemory := resource.MustParse("1Gi")
-			qtyMemory := resourceQuota.Spec.Hard["requests.memory"]
+			qtyMemory := resourceQuota.Spec.Hard[corev1.ResourceRequestsMemory]
 			Expect((&qtyMemory).Cmp(expectedMemory)).To(Equal(0))
 
 			expectedStorage := resource.MustParse("10Gi")
-			qtyStorage := resourceQuota.Spec.Hard["requests.storage"]
+			qtyStorage := resourceQuota.Spec.Hard[corev1.ResourceRequestsStorage]
 			Expect((&qtyStorage).Cmp(expectedStorage)).To(Equal(0))
 
 			expectedPVCs := resource.MustParse("1")
-			qtyPVCs := resourceQuota.Spec.Hard["persistentvolumeclaims"]
+			qtyPVCs := resourceQuota.Spec.Hard[corev1.ResourcePersistentVolumeClaims]
 			Expect((&qtyPVCs).Cmp(expectedPVCs)).To(Equal(0))
 
 			expectedPods := resource.MustParse("5")
-			qtyPods := resourceQuota.Spec.Hard["pods"]
+			qtyPods := resourceQuota.Spec.Hard[corev1.ResourcePods]
 			Expect((&qtyPods).Cmp(expectedPods)).To(Equal(0))
 
 			limitRange := &corev1.LimitRange{}
 			Expect(k8sClient.Get(ctx, types.NamespacedName{
 				Name:      "costguard-limitrange",
-				Namespace: "managed-test-namespace",
+				Namespace: testManagedNamespaceName,
 			}, limitRange)).To(Succeed())
 			Expect(limitRange.Spec.Limits).To(HaveLen(1))
 			item := limitRange.Spec.Limits[0]
 			Expect(item.Type).To(Equal(corev1.LimitTypeContainer))
 
 			expectedReqCPU := resource.MustParse("100m")
-			qtyReqCPU := item.DefaultRequest["cpu"]
+			qtyReqCPU := item.DefaultRequest[corev1.ResourceCPU]
 			Expect((&qtyReqCPU).Cmp(expectedReqCPU)).To(Equal(0))
 
 			expectedReqMemory := resource.MustParse("128Mi")
-			qtyReqMemory := item.DefaultRequest["memory"]
+			qtyReqMemory := item.DefaultRequest[corev1.ResourceMemory]
 			Expect((&qtyReqMemory).Cmp(expectedReqMemory)).To(Equal(0))
 
 			expectedLimitCPU := resource.MustParse("250m")
-			qtyLimitCPU := item.Default["cpu"]
+			qtyLimitCPU := item.Default[corev1.ResourceCPU]
 			Expect((&qtyLimitCPU).Cmp(expectedLimitCPU)).To(Equal(0))
 
 			expectedLimitMemory := resource.MustParse("256Mi")
-			qtyLimitMemory := item.Default["memory"]
+			qtyLimitMemory := item.Default[corev1.ResourceMemory]
 			Expect((&qtyLimitMemory).Cmp(expectedLimitMemory)).To(Equal(0))
 
 			reconciled := &finopsv1alpha1.BudgetNamespace{}
 			Expect(k8sClient.Get(ctx, typeNamespacedName, reconciled)).To(Succeed())
-			Expect(reconciled.Status.ManagedNamespace).To(Equal("managed-test-namespace"))
+			Expect(reconciled.Status.ManagedNamespace).To(Equal(testManagedNamespaceName))
 			Expect(reconciled.Status.ObservedGeneration).To(Equal(reconciled.Generation))
 			Expect(reconciled.Status.ExpiresAt).NotTo(BeNil())
-			expiredCondition := meta.FindStatusCondition(reconciled.Status.Conditions, "Expired")
+			expiredCondition := meta.FindStatusCondition(reconciled.Status.Conditions, conditionTypeExpired)
 			Expect(expiredCondition).NotTo(BeNil())
 			Expect(expiredCondition.Status).To(Equal(metav1.ConditionFalse))
 			Expect(expiredCondition.Reason).To(Equal("TTLActive"))
 			Expect(reconciled.Status.Conditions).NotTo(BeEmpty())
-			readyCondition := meta.FindStatusCondition(reconciled.Status.Conditions, "Ready")
+			readyCondition := meta.FindStatusCondition(reconciled.Status.Conditions, conditionTypeReady)
 			Expect(readyCondition).NotTo(BeNil())
 			Expect(readyCondition.Status).To(Equal(metav1.ConditionTrue))
 			Expect(readyCondition.Reason).To(Equal("NamespaceReady"))
@@ -205,23 +220,23 @@ var _ = Describe("BudgetNamespace Controller", func() {
 			expiredBudgetNamespace := &finopsv1alpha1.BudgetNamespace{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      expiredCRName,
-					Namespace: "default",
+					Namespace: testBudgetCRNamespace,
 				},
 				Spec: finopsv1alpha1.BudgetNamespaceSpec{
 					NamespaceName: expiredManagedNamespaceName,
 					TTL:           "-1h",
 					Quota: finopsv1alpha1.BudgetNamespaceQuotaSpec{
 						CPU:                    "1",
-						Memory:                 "1Gi",
-						Storage:                "10Gi",
+						Memory:                 testQuotaMemory,
+						Storage:                testQuotaStorage,
 						PersistentVolumeClaims: 1,
 						Pods:                   5,
 					},
 					Defaults: finopsv1alpha1.BudgetNamespaceDefaultsSpec{
-						RequestCPU:    "100m",
-						RequestMemory: "128Mi",
-						LimitCPU:      "250m",
-						LimitMemory:   "256Mi",
+						RequestCPU:    testDefaultsRequestCPU,
+						RequestMemory: testDefaultsRequestMemory,
+						LimitCPU:      testDefaultsLimitCPU,
+						LimitMemory:   testDefaultsLimitMemory,
 					},
 				},
 			}
@@ -236,7 +251,7 @@ var _ = Describe("BudgetNamespace Controller", func() {
 			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: types.NamespacedName{
 					Name:      expiredCRName,
-					Namespace: "default",
+					Namespace: testBudgetCRNamespace,
 				},
 			})
 			Expect(err).NotTo(HaveOccurred())
@@ -255,18 +270,18 @@ var _ = Describe("BudgetNamespace Controller", func() {
 			reconciled := &finopsv1alpha1.BudgetNamespace{}
 			Expect(k8sClient.Get(ctx, types.NamespacedName{
 				Name:      expiredCRName,
-				Namespace: "default",
+				Namespace: testBudgetCRNamespace,
 			}, reconciled)).To(Succeed())
 
-			expiredCondition := meta.FindStatusCondition(reconciled.Status.Conditions, "Expired")
+			expiredCondition := meta.FindStatusCondition(reconciled.Status.Conditions, conditionTypeExpired)
 			Expect(expiredCondition).NotTo(BeNil())
 			Expect(expiredCondition.Status).To(Equal(metav1.ConditionTrue))
-			Expect(expiredCondition.Reason).To(Equal("TTLExpired"))
+			Expect(expiredCondition.Reason).To(Equal(conditionReasonTTLExpired))
 
-			readyCondition := meta.FindStatusCondition(reconciled.Status.Conditions, "Ready")
+			readyCondition := meta.FindStatusCondition(reconciled.Status.Conditions, conditionTypeReady)
 			Expect(readyCondition).NotTo(BeNil())
 			Expect(readyCondition.Status).To(Equal(metav1.ConditionFalse))
-			Expect(readyCondition.Reason).To(Equal("TTLExpired"))
+			Expect(readyCondition.Reason).To(Equal(conditionReasonTTLExpired))
 
 			By("cleanup")
 			// Ignore cleanup errors; controller may race.
@@ -285,22 +300,22 @@ var _ = Describe("BudgetNamespace Controller", func() {
 
 			Expect(k8sClient.Create(ctx, &appsv1.Deployment{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:      "workload",
+					Name:      testWorkloadName,
 					Namespace: graceManagedNS,
 				},
 				Spec: appsv1.DeploymentSpec{
 					Replicas: &replicas,
 					Selector: &metav1.LabelSelector{
-						MatchLabels: map[string]string{"app": "workload"},
+						MatchLabels: map[string]string{testWorkloadSelectorLabelKey: testWorkloadName},
 					},
 					Template: corev1.PodTemplateSpec{
 						ObjectMeta: metav1.ObjectMeta{
-							Labels: map[string]string{"app": "workload"},
+							Labels: map[string]string{testWorkloadSelectorLabelKey: testWorkloadName},
 						},
 						Spec: corev1.PodSpec{
 							Containers: []corev1.Container{{
 								Name:  "c",
-								Image: "pause:latest",
+								Image: testContainerImage,
 							}},
 						},
 					},
@@ -311,27 +326,27 @@ var _ = Describe("BudgetNamespace Controller", func() {
 			graceBN := &finopsv1alpha1.BudgetNamespace{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      graceCRName,
-					Namespace: "default",
+					Namespace: testBudgetCRNamespace,
 				},
 				Spec: finopsv1alpha1.BudgetNamespaceSpec{
 					NamespaceName: graceManagedNS,
 					TTL:           "1s",
 					Enforcement: finopsv1alpha1.BudgetNamespaceEnforcementSpec{
 						Enabled: true,
-						Action:  "ScaleToZero",
+						Action:  enforcementOpScaleToZero,
 					},
 					Quota: finopsv1alpha1.BudgetNamespaceQuotaSpec{
 						CPU:                    "1",
-						Memory:                 "1Gi",
-						Storage:                "10Gi",
+						Memory:                 testQuotaMemory,
+						Storage:                testQuotaStorage,
 						PersistentVolumeClaims: 1,
 						Pods:                   5,
 					},
 					Defaults: finopsv1alpha1.BudgetNamespaceDefaultsSpec{
-						RequestCPU:    "100m",
-						RequestMemory: "128Mi",
-						LimitCPU:      "250m",
-						LimitMemory:   "256Mi",
+						RequestCPU:    testDefaultsRequestCPU,
+						RequestMemory: testDefaultsRequestMemory,
+						LimitCPU:      testDefaultsLimitCPU,
+						LimitMemory:   testDefaultsLimitMemory,
 					},
 				},
 			}
@@ -342,12 +357,12 @@ var _ = Describe("BudgetNamespace Controller", func() {
 
 			rec := &BudgetNamespaceReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
 			_, err := rec.Reconcile(ctx, reconcile.Request{
-				NamespacedName: types.NamespacedName{Name: graceCRName, Namespace: "default"},
+				NamespacedName: types.NamespacedName{Name: graceCRName, Namespace: testBudgetCRNamespace},
 			})
 			Expect(err).NotTo(HaveOccurred())
 
 			deploy := &appsv1.Deployment{}
-			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "workload", Namespace: graceManagedNS}, deploy)).To(Succeed())
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: testWorkloadName, Namespace: graceManagedNS}, deploy)).To(Succeed())
 			Expect(deploy.Spec.Replicas).NotTo(BeNil())
 			Expect(*deploy.Spec.Replicas).To(Equal(int32(0)))
 			Expect(deploy.Annotations["finops.ealebed.github.io/pre-scale-replicas"]).To(Equal("2"))
@@ -369,27 +384,27 @@ var _ = Describe("BudgetNamespace Controller", func() {
 			quotaBN := &finopsv1alpha1.BudgetNamespace{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      quotaCRName,
-					Namespace: "default",
+					Namespace: testBudgetCRNamespace,
 				},
 				Spec: finopsv1alpha1.BudgetNamespaceSpec{
 					NamespaceName: quotaManagedNS,
-					TTL:           "1000h",
+					TTL:           testLongTTL,
 					Enforcement: finopsv1alpha1.BudgetNamespaceEnforcementSpec{
 						Enabled: true,
-						Action:  "ScaleToZero",
+						Action:  enforcementOpScaleToZero,
 					},
 					Quota: finopsv1alpha1.BudgetNamespaceQuotaSpec{
 						CPU:                    "1",
-						Memory:                 "1Gi",
-						Storage:                "10Gi",
+						Memory:                 testQuotaMemory,
+						Storage:                testQuotaStorage,
 						PersistentVolumeClaims: 1,
 						Pods:                   5,
 					},
 					Defaults: finopsv1alpha1.BudgetNamespaceDefaultsSpec{
-						RequestCPU:    "100m",
-						RequestMemory: "128Mi",
-						LimitCPU:      "250m",
-						LimitMemory:   "256Mi",
+						RequestCPU:    testDefaultsRequestCPU,
+						RequestMemory: testDefaultsRequestMemory,
+						LimitCPU:      testDefaultsLimitCPU,
+						LimitMemory:   testDefaultsLimitMemory,
 					},
 				},
 			}
@@ -397,28 +412,28 @@ var _ = Describe("BudgetNamespace Controller", func() {
 
 			rec := &BudgetNamespaceReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
 			_, err := rec.Reconcile(ctx, reconcile.Request{
-				NamespacedName: types.NamespacedName{Name: quotaCRName, Namespace: "default"},
+				NamespacedName: types.NamespacedName{Name: quotaCRName, Namespace: testBudgetCRNamespace},
 			})
 			Expect(err).NotTo(HaveOccurred())
 
 			Expect(k8sClient.Create(ctx, &appsv1.Deployment{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:      "workload",
+					Name:      testWorkloadName,
 					Namespace: quotaManagedNS,
 				},
 				Spec: appsv1.DeploymentSpec{
 					Replicas: &replicas,
 					Selector: &metav1.LabelSelector{
-						MatchLabels: map[string]string{"app": "workload"},
+						MatchLabels: map[string]string{testWorkloadSelectorLabelKey: testWorkloadName},
 					},
 					Template: corev1.PodTemplateSpec{
 						ObjectMeta: metav1.ObjectMeta{
-							Labels: map[string]string{"app": "workload"},
+							Labels: map[string]string{testWorkloadSelectorLabelKey: testWorkloadName},
 						},
 						Spec: corev1.PodSpec{
 							Containers: []corev1.Container{{
 								Name:  "c",
-								Image: "pause:latest",
+								Image: testContainerImage,
 							}},
 						},
 					},
@@ -435,19 +450,19 @@ var _ = Describe("BudgetNamespace Controller", func() {
 			Expect(k8sClient.Status().Update(ctx, rq)).To(Succeed())
 
 			_, err = rec.Reconcile(ctx, reconcile.Request{
-				NamespacedName: types.NamespacedName{Name: quotaCRName, Namespace: "default"},
+				NamespacedName: types.NamespacedName{Name: quotaCRName, Namespace: testBudgetCRNamespace},
 			})
 			Expect(err).NotTo(HaveOccurred())
 
 			deploy := &appsv1.Deployment{}
-			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "workload", Namespace: quotaManagedNS}, deploy)).To(Succeed())
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: testWorkloadName, Namespace: quotaManagedNS}, deploy)).To(Succeed())
 			Expect(deploy.Spec.Replicas).NotTo(BeNil())
 			Expect(*deploy.Spec.Replicas).To(Equal(int32(0)))
 			Expect(deploy.Annotations["finops.ealebed.github.io/pre-scale-replicas"]).To(Equal("2"))
 
 			reconciled := &finopsv1alpha1.BudgetNamespace{}
-			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: quotaCRName, Namespace: "default"}, reconciled)).To(Succeed())
-			ob := meta.FindStatusCondition(reconciled.Status.Conditions, "OverBudget")
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: quotaCRName, Namespace: testBudgetCRNamespace}, reconciled)).To(Succeed())
+			ob := meta.FindStatusCondition(reconciled.Status.Conditions, conditionTypeOverBudget)
 			Expect(ob).NotTo(BeNil())
 			Expect(ob.Status).To(Equal(metav1.ConditionTrue))
 			Expect(ob.Reason).To(Equal("ResourceQuotaAtOrOverHard"))
@@ -469,29 +484,29 @@ var _ = Describe("BudgetNamespace Controller", func() {
 			restoreBN := &finopsv1alpha1.BudgetNamespace{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      restoreCRName,
-					Namespace: "default",
+					Namespace: testBudgetCRNamespace,
 				},
 				Spec: finopsv1alpha1.BudgetNamespaceSpec{
 					NamespaceName: restoreManagedNS,
-					TTL:           "1000h",
+					TTL:           testLongTTL,
 					Enforcement: finopsv1alpha1.BudgetNamespaceEnforcementSpec{
 						Enabled:             true,
-						Action:              "ScaleToZero",
+						Action:              enforcementOpScaleToZero,
 						RestoreOnRecovery:   true,
 						EnforcementCooldown: "0s",
 					},
 					Quota: finopsv1alpha1.BudgetNamespaceQuotaSpec{
 						CPU:                    "1",
-						Memory:                 "1Gi",
-						Storage:                "10Gi",
+						Memory:                 testQuotaMemory,
+						Storage:                testQuotaStorage,
 						PersistentVolumeClaims: 1,
 						Pods:                   5,
 					},
 					Defaults: finopsv1alpha1.BudgetNamespaceDefaultsSpec{
-						RequestCPU:    "100m",
-						RequestMemory: "128Mi",
-						LimitCPU:      "250m",
-						LimitMemory:   "256Mi",
+						RequestCPU:    testDefaultsRequestCPU,
+						RequestMemory: testDefaultsRequestMemory,
+						LimitCPU:      testDefaultsLimitCPU,
+						LimitMemory:   testDefaultsLimitMemory,
 					},
 				},
 			}
@@ -499,28 +514,28 @@ var _ = Describe("BudgetNamespace Controller", func() {
 
 			rec := &BudgetNamespaceReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
 			_, err := rec.Reconcile(ctx, reconcile.Request{
-				NamespacedName: types.NamespacedName{Name: restoreCRName, Namespace: "default"},
+				NamespacedName: types.NamespacedName{Name: restoreCRName, Namespace: testBudgetCRNamespace},
 			})
 			Expect(err).NotTo(HaveOccurred())
 
 			Expect(k8sClient.Create(ctx, &appsv1.Deployment{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:      "workload",
+					Name:      testWorkloadName,
 					Namespace: restoreManagedNS,
 				},
 				Spec: appsv1.DeploymentSpec{
 					Replicas: &replicas,
 					Selector: &metav1.LabelSelector{
-						MatchLabels: map[string]string{"app": "workload"},
+						MatchLabels: map[string]string{testWorkloadSelectorLabelKey: testWorkloadName},
 					},
 					Template: corev1.PodTemplateSpec{
 						ObjectMeta: metav1.ObjectMeta{
-							Labels: map[string]string{"app": "workload"},
+							Labels: map[string]string{testWorkloadSelectorLabelKey: testWorkloadName},
 						},
 						Spec: corev1.PodSpec{
 							Containers: []corev1.Container{{
 								Name:  "c",
-								Image: "pause:latest",
+								Image: testContainerImage,
 							}},
 						},
 					},
@@ -537,38 +552,38 @@ var _ = Describe("BudgetNamespace Controller", func() {
 			Expect(k8sClient.Status().Update(ctx, rq)).To(Succeed())
 
 			_, err = rec.Reconcile(ctx, reconcile.Request{
-				NamespacedName: types.NamespacedName{Name: restoreCRName, Namespace: "default"},
+				NamespacedName: types.NamespacedName{Name: restoreCRName, Namespace: testBudgetCRNamespace},
 			})
 			Expect(err).NotTo(HaveOccurred())
 
 			deploy := &appsv1.Deployment{}
-			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "workload", Namespace: restoreManagedNS}, deploy)).To(Succeed())
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: testWorkloadName, Namespace: restoreManagedNS}, deploy)).To(Succeed())
 			Expect(*deploy.Spec.Replicas).To(Equal(int32(0)))
 
 			Expect(k8sClient.Get(ctx, types.NamespacedName{
 				Name: resourceQuotaName, Namespace: restoreManagedNS,
 			}, rq)).To(Succeed())
 			rq.Status.Used = corev1.ResourceList{
-				"pods":                   resource.MustParse("0"),
-				"requests.cpu":           resource.MustParse("0"),
-				"requests.memory":        resource.MustParse("0"),
-				"requests.storage":       resource.MustParse("0"),
-				"persistentvolumeclaims": resource.MustParse("0"),
+				corev1.ResourcePods:                   resource.MustParse("0"),
+				corev1.ResourceRequestsCPU:            resource.MustParse("0"),
+				corev1.ResourceRequestsMemory:         resource.MustParse("0"),
+				corev1.ResourceRequestsStorage:        resource.MustParse("0"),
+				corev1.ResourcePersistentVolumeClaims: resource.MustParse("0"),
 			}
 			Expect(k8sClient.Status().Update(ctx, rq)).To(Succeed())
 
 			_, err = rec.Reconcile(ctx, reconcile.Request{
-				NamespacedName: types.NamespacedName{Name: restoreCRName, Namespace: "default"},
+				NamespacedName: types.NamespacedName{Name: restoreCRName, Namespace: testBudgetCRNamespace},
 			})
 			Expect(err).NotTo(HaveOccurred())
 
-			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "workload", Namespace: restoreManagedNS}, deploy)).To(Succeed())
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: testWorkloadName, Namespace: restoreManagedNS}, deploy)).To(Succeed())
 			Expect(*deploy.Spec.Replicas).To(Equal(int32(2)))
 			Expect(deploy.Annotations).NotTo(HaveKey("finops.ealebed.github.io/pre-scale-replicas"))
 
 			reconciled := &finopsv1alpha1.BudgetNamespace{}
-			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: restoreCRName, Namespace: "default"}, reconciled)).To(Succeed())
-			Expect(reconciled.Status.LastEnforcementOperation).To(Equal("Restore"))
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: restoreCRName, Namespace: testBudgetCRNamespace}, reconciled)).To(Succeed())
+			Expect(reconciled.Status.LastEnforcementOperation).To(Equal(enforcementOpRestore))
 
 			By("cleanup")
 			_ = k8sClient.Delete(ctx, restoreBN)
@@ -587,27 +602,27 @@ var _ = Describe("BudgetNamespace Controller", func() {
 			costBN := &finopsv1alpha1.BudgetNamespace{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      costCRName,
-					Namespace: "default",
+					Namespace: testBudgetCRNamespace,
 				},
 				Spec: finopsv1alpha1.BudgetNamespaceSpec{
 					NamespaceName: costManagedNS,
-					TTL:           "1000h",
+					TTL:           testLongTTL,
 					Enforcement: finopsv1alpha1.BudgetNamespaceEnforcementSpec{
 						Enabled: true,
-						Action:  "ScaleToZero",
+						Action:  enforcementOpScaleToZero,
 					},
 					Quota: finopsv1alpha1.BudgetNamespaceQuotaSpec{
 						CPU:                    "1",
-						Memory:                 "1Gi",
-						Storage:                "10Gi",
+						Memory:                 testQuotaMemory,
+						Storage:                testQuotaStorage,
 						PersistentVolumeClaims: 1,
 						Pods:                   5,
 					},
 					Defaults: finopsv1alpha1.BudgetNamespaceDefaultsSpec{
-						RequestCPU:    "100m",
-						RequestMemory: "128Mi",
-						LimitCPU:      "250m",
-						LimitMemory:   "256Mi",
+						RequestCPU:    testDefaultsRequestCPU,
+						RequestMemory: testDefaultsRequestMemory,
+						LimitCPU:      testDefaultsLimitCPU,
+						LimitMemory:   testDefaultsLimitMemory,
 					},
 					CostBudget: &finopsv1alpha1.BudgetNamespaceCostBudgetSpec{
 						Enabled:            true,
@@ -625,28 +640,28 @@ var _ = Describe("BudgetNamespace Controller", func() {
 				SpendQuerier: &fakeSpendQuerier{v: 2.0},
 			}
 			_, err := rec.Reconcile(ctx, reconcile.Request{
-				NamespacedName: types.NamespacedName{Name: costCRName, Namespace: "default"},
+				NamespacedName: types.NamespacedName{Name: costCRName, Namespace: testBudgetCRNamespace},
 			})
 			Expect(err).NotTo(HaveOccurred())
 
 			Expect(k8sClient.Create(ctx, &appsv1.Deployment{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:      "workload",
+					Name:      testWorkloadName,
 					Namespace: costManagedNS,
 				},
 				Spec: appsv1.DeploymentSpec{
 					Replicas: &replicas,
 					Selector: &metav1.LabelSelector{
-						MatchLabels: map[string]string{"app": "workload"},
+						MatchLabels: map[string]string{testWorkloadSelectorLabelKey: testWorkloadName},
 					},
 					Template: corev1.PodTemplateSpec{
 						ObjectMeta: metav1.ObjectMeta{
-							Labels: map[string]string{"app": "workload"},
+							Labels: map[string]string{testWorkloadSelectorLabelKey: testWorkloadName},
 						},
 						Spec: corev1.PodSpec{
 							Containers: []corev1.Container{{
 								Name:  "c",
-								Image: "pause:latest",
+								Image: testContainerImage,
 							}},
 						},
 					},
@@ -654,19 +669,19 @@ var _ = Describe("BudgetNamespace Controller", func() {
 			})).To(Succeed())
 
 			_, err = rec.Reconcile(ctx, reconcile.Request{
-				NamespacedName: types.NamespacedName{Name: costCRName, Namespace: "default"},
+				NamespacedName: types.NamespacedName{Name: costCRName, Namespace: testBudgetCRNamespace},
 			})
 			Expect(err).NotTo(HaveOccurred())
 
 			deploy := &appsv1.Deployment{}
-			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "workload", Namespace: costManagedNS}, deploy)).To(Succeed())
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: testWorkloadName, Namespace: costManagedNS}, deploy)).To(Succeed())
 			Expect(deploy.Spec.Replicas).NotTo(BeNil())
 			Expect(*deploy.Spec.Replicas).To(Equal(int32(0)))
 			Expect(deploy.Annotations["finops.ealebed.github.io/pre-scale-replicas"]).To(Equal("2"))
 
 			reconciled := &finopsv1alpha1.BudgetNamespace{}
-			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: costCRName, Namespace: "default"}, reconciled)).To(Succeed())
-			ob := meta.FindStatusCondition(reconciled.Status.Conditions, "OverBudget")
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: costCRName, Namespace: testBudgetCRNamespace}, reconciled)).To(Succeed())
+			ob := meta.FindStatusCondition(reconciled.Status.Conditions, conditionTypeOverBudget)
 			Expect(ob).NotTo(BeNil())
 			Expect(ob.Status).To(Equal(metav1.ConditionTrue))
 			Expect(ob.Reason).To(Equal("CostBudgetExceeded"))
