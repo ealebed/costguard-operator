@@ -222,7 +222,3 @@ type BudgetNamespaceList struct {
 	metav1.ListMeta `json:"metadata,omitzero"`
 	Items           []BudgetNamespace `json:"items"`
 }
-
-func init() {
-	SchemeBuilder.Register(&BudgetNamespace{}, &BudgetNamespaceList{})
-}

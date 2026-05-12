@@ -57,6 +57,13 @@ const (
 	costguardExemptLabelValue = "true"
 	// preScaleReplicasAnnotation stores the replica count before scale-to-zero (string int32).
 	preScaleReplicasAnnotation = "finops.ealebed.github.io/pre-scale-replicas"
+
+	conditionTypeExpired                     = "Expired"
+	conditionTypeOverBudget                  = "OverBudget"
+	conditionTypeEnforcementRecoveryDeferred = "EnforcementRecoveryDeferred"
+	conditionTypeReady                       = "Ready"
+
+	conditionReasonTTLExpired = "TTLExpired"
 )
 
 // ttlDeleteGracePeriod is the delay between TTL expiry and deleting the managed Namespace.
@@ -207,22 +214,22 @@ func (r *BudgetNamespaceReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 			},
 			Spec: corev1.ResourceQuotaSpec{
 				Hard: corev1.ResourceList{
-					"requests.cpu":           requestCPU,
-					"requests.memory":        requestMemory,
-					"requests.storage":       requestStorage,
-					"persistentvolumeclaims": pvcCount,
-					"pods":                   podCount,
+					corev1.ResourceRequestsCPU:            requestCPU,
+					corev1.ResourceRequestsMemory:         requestMemory,
+					corev1.ResourceRequestsStorage:        requestStorage,
+					corev1.ResourcePersistentVolumeClaims: pvcCount,
+					corev1.ResourcePods:                   podCount,
 				},
 			},
 		}
 
 		if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, resourceQuota, func() error {
 			resourceQuota.Spec.Hard = corev1.ResourceList{
-				"requests.cpu":           requestCPU,
-				"requests.memory":        requestMemory,
-				"requests.storage":       requestStorage,
-				"persistentvolumeclaims": pvcCount,
-				"pods":                   podCount,
+				corev1.ResourceRequestsCPU:            requestCPU,
+				corev1.ResourceRequestsMemory:         requestMemory,
+				corev1.ResourceRequestsStorage:        requestStorage,
+				corev1.ResourcePersistentVolumeClaims: pvcCount,
+				corev1.ResourcePods:                   podCount,
 			}
 			return nil
 		}); err != nil {
@@ -256,12 +263,12 @@ func (r *BudgetNamespaceReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 					{
 						Type: corev1.LimitTypeContainer,
 						DefaultRequest: corev1.ResourceList{
-							"cpu":    requestCPUDefault,
-							"memory": requestMemoryDefault,
+							corev1.ResourceCPU:    requestCPUDefault,
+							corev1.ResourceMemory: requestMemoryDefault,
 						},
 						Default: corev1.ResourceList{
-							"cpu":    limitCPUDefault,
-							"memory": limitMemoryDefault,
+							corev1.ResourceCPU:    limitCPUDefault,
+							corev1.ResourceMemory: limitMemoryDefault,
 						},
 					},
 				},
@@ -273,12 +280,12 @@ func (r *BudgetNamespaceReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 				{
 					Type: corev1.LimitTypeContainer,
 					DefaultRequest: corev1.ResourceList{
-						"cpu":    requestCPUDefault,
-						"memory": requestMemoryDefault,
+						corev1.ResourceCPU:    requestCPUDefault,
+						corev1.ResourceMemory: requestMemoryDefault,
 					},
 					Default: corev1.ResourceList{
-						"cpu":    limitCPUDefault,
-						"memory": limitMemoryDefault,
+						corev1.ResourceCPU:    limitCPUDefault,
+						corev1.ResourceMemory: limitMemoryDefault,
 					},
 				},
 			}
@@ -406,15 +413,15 @@ func (r *BudgetNamespaceReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	if budgetNamespace.Spec.TTL != "" {
 		if expired {
 			apimeta.SetStatusCondition(&budgetNamespace.Status.Conditions, metav1.Condition{
-				Type:               "Expired",
+				Type:               conditionTypeExpired,
 				Status:             metav1.ConditionTrue,
-				Reason:             "TTLExpired",
+				Reason:             conditionReasonTTLExpired,
 				Message:            fmt.Sprintf("Namespace TTL expired; deleting after %s", ttlDeleteGracePeriod),
 				ObservedGeneration: budgetNamespace.Generation,
 			})
 		} else {
 			apimeta.SetStatusCondition(&budgetNamespace.Status.Conditions, metav1.Condition{
-				Type:               "Expired",
+				Type:               conditionTypeExpired,
 				Status:             metav1.ConditionFalse,
 				Reason:             "TTLActive",
 				Message:            "TTL is active",
@@ -424,7 +431,7 @@ func (r *BudgetNamespaceReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 
 		if expired {
 			readyStatus = metav1.ConditionFalse
-			readyReason = "TTLExpired"
+			readyReason = conditionReasonTTLExpired
 			readyMessage = fmt.Sprintf("Namespace %q is expired by TTL", budgetNamespace.Spec.NamespaceName)
 		}
 	}
@@ -432,7 +439,7 @@ func (r *BudgetNamespaceReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	switch {
 	case !shouldScaleDeploymentsToZero(&budgetNamespace.Spec):
 		apimeta.SetStatusCondition(&budgetNamespace.Status.Conditions, metav1.Condition{
-			Type:               "OverBudget",
+			Type:               conditionTypeOverBudget,
 			Status:             metav1.ConditionFalse,
 			Reason:             "EnforcementDisabled",
 			Message:            "Scale-to-zero enforcement is disabled",
@@ -443,7 +450,7 @@ func (r *BudgetNamespaceReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		if budgetViolated {
 			reason, message := overBudgetReasonMessage(quotaAtHardLimit, costOverBudget)
 			apimeta.SetStatusCondition(&budgetNamespace.Status.Conditions, metav1.Condition{
-				Type:               "OverBudget",
+				Type:               conditionTypeOverBudget,
 				Status:             metav1.ConditionTrue,
 				Reason:             reason,
 				Message:            message,
@@ -455,7 +462,7 @@ func (r *BudgetNamespaceReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 				msg = "ResourceQuota usage is below hard limits and billed spend is below maxSpendUSD"
 			}
 			apimeta.SetStatusCondition(&budgetNamespace.Status.Conditions, metav1.Condition{
-				Type:               "OverBudget",
+				Type:               conditionTypeOverBudget,
 				Status:             metav1.ConditionFalse,
 				Reason:             "WithinBudget",
 				Message:            msg,
@@ -464,9 +471,9 @@ func (r *BudgetNamespaceReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		}
 	case budgetNamespace.Spec.TTL != "" && expired:
 		apimeta.SetStatusCondition(&budgetNamespace.Status.Conditions, metav1.Condition{
-			Type:               "OverBudget",
+			Type:               conditionTypeOverBudget,
 			Status:             metav1.ConditionFalse,
-			Reason:             "TTLExpired",
+			Reason:             conditionReasonTTLExpired,
 			Message:            "Resource quota usage is not re-evaluated after TTL expiry",
 			ObservedGeneration: budgetNamespace.Generation,
 		})
@@ -475,7 +482,7 @@ func (r *BudgetNamespaceReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	switch {
 	case !shouldScaleDeploymentsToZero(&budgetNamespace.Spec) || !quotaEvaluated:
 		apimeta.SetStatusCondition(&budgetNamespace.Status.Conditions, metav1.Condition{
-			Type:               "EnforcementRecoveryDeferred",
+			Type:               conditionTypeEnforcementRecoveryDeferred,
 			Status:             metav1.ConditionFalse,
 			Reason:             "NotApplicable",
 			Message:            "Enforcement recovery deferral is not tracked in this state",
@@ -483,7 +490,7 @@ func (r *BudgetNamespaceReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		})
 	case recoveryDeferred:
 		apimeta.SetStatusCondition(&budgetNamespace.Status.Conditions, metav1.Condition{
-			Type:               "EnforcementRecoveryDeferred",
+			Type:               conditionTypeEnforcementRecoveryDeferred,
 			Status:             metav1.ConditionTrue,
 			Reason:             "AwaitingEnforcementCooldown",
 			Message:            "Restore is waiting for enforcement cooldown after scale-to-zero",
@@ -491,7 +498,7 @@ func (r *BudgetNamespaceReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		})
 	default:
 		apimeta.SetStatusCondition(&budgetNamespace.Status.Conditions, metav1.Condition{
-			Type:               "EnforcementRecoveryDeferred",
+			Type:               conditionTypeEnforcementRecoveryDeferred,
 			Status:             metav1.ConditionFalse,
 			Reason:             "NotDeferred",
 			Message:            "No restore action is blocked by enforcement cooldown",
@@ -500,7 +507,7 @@ func (r *BudgetNamespaceReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	}
 
 	apimeta.SetStatusCondition(&budgetNamespace.Status.Conditions, metav1.Condition{
-		Type:               "Ready",
+		Type:               conditionTypeReady,
 		Status:             readyStatus,
 		Reason:             readyReason,
 		Message:            readyMessage,
@@ -552,7 +559,7 @@ func shouldScaleDeploymentsToZero(spec *finopsv1alpha1.BudgetNamespaceSpec) bool
 	if !enf.Enabled {
 		return false
 	}
-	return enf.Action == "" || enf.Action == "ScaleToZero"
+	return enf.Action == "" || enf.Action == enforcementOpScaleToZero
 }
 
 func (r *BudgetNamespaceReconciler) recordNormal(bn *finopsv1alpha1.BudgetNamespace, reason, message string) {

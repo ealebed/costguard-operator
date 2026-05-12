@@ -22,7 +22,7 @@ func TestQuotaUsedAtOrOverHard(t *testing.T) {
 			name: "empty status",
 			rq: &corev1.ResourceQuota{
 				Spec: corev1.ResourceQuotaSpec{
-					Hard: corev1.ResourceList{"pods": hPods},
+					Hard: corev1.ResourceList{corev1.ResourcePods: hPods},
 				},
 			},
 			want: false,
@@ -31,10 +31,10 @@ func TestQuotaUsedAtOrOverHard(t *testing.T) {
 			name: "used below hard",
 			rq: &corev1.ResourceQuota{
 				Spec: corev1.ResourceQuotaSpec{
-					Hard: corev1.ResourceList{"pods": hPods},
+					Hard: corev1.ResourceList{corev1.ResourcePods: hPods},
 				},
 				Status: corev1.ResourceQuotaStatus{
-					Used: corev1.ResourceList{"pods": resource.MustParse("1")},
+					Used: corev1.ResourceList{corev1.ResourcePods: resource.MustParse("1")},
 				},
 			},
 			want: false,
@@ -43,10 +43,10 @@ func TestQuotaUsedAtOrOverHard(t *testing.T) {
 			name: "used equals hard",
 			rq: &corev1.ResourceQuota{
 				Spec: corev1.ResourceQuotaSpec{
-					Hard: corev1.ResourceList{"pods": hPods},
+					Hard: corev1.ResourceList{corev1.ResourcePods: hPods},
 				},
 				Status: corev1.ResourceQuotaStatus{
-					Used: corev1.ResourceList{"pods": resource.MustParse("2")},
+					Used: corev1.ResourceList{corev1.ResourcePods: resource.MustParse("2")},
 				},
 			},
 			want: true,
@@ -55,10 +55,10 @@ func TestQuotaUsedAtOrOverHard(t *testing.T) {
 			name: "used above hard",
 			rq: &corev1.ResourceQuota{
 				Spec: corev1.ResourceQuotaSpec{
-					Hard: corev1.ResourceList{"pods": hPods},
+					Hard: corev1.ResourceList{corev1.ResourcePods: hPods},
 				},
 				Status: corev1.ResourceQuotaStatus{
-					Used: corev1.ResourceList{"pods": resource.MustParse("3")},
+					Used: corev1.ResourceList{corev1.ResourcePods: resource.MustParse("3")},
 				},
 			},
 			want: true,
@@ -68,16 +68,16 @@ func TestQuotaUsedAtOrOverHard(t *testing.T) {
 			rq: &corev1.ResourceQuota{
 				Spec: corev1.ResourceQuotaSpec{
 					Hard: corev1.ResourceList{
-						"pods":            hPods,
-						"requests.cpu":    hCPU,
-						"requests.memory": resource.MustParse("1Gi"),
+						corev1.ResourcePods:           hPods,
+						corev1.ResourceRequestsCPU:    hCPU,
+						corev1.ResourceRequestsMemory: resource.MustParse("1Gi"),
 					},
 				},
 				Status: corev1.ResourceQuotaStatus{
 					Used: corev1.ResourceList{
-						"pods":            resource.MustParse("1"),
-						"requests.cpu":    hCPU,
-						"requests.memory": resource.MustParse("100Mi"),
+						corev1.ResourcePods:           resource.MustParse("1"),
+						corev1.ResourceRequestsCPU:    hCPU,
+						corev1.ResourceRequestsMemory: resource.MustParse("100Mi"),
 					},
 				},
 			},
