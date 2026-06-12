@@ -4,7 +4,7 @@ go 1.26.1
 
 require (
 	cloud.google.com/go/bigquery v1.77.0
-	github.com/onsi/ginkgo/v2 v2.29.0
+	github.com/onsi/ginkgo/v2 v2.30.0
 	github.com/onsi/gomega v1.41.0
 	google.golang.org/api v0.284.0
 	k8s.io/api v0.36.1
