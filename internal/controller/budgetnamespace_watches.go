@@ -4,7 +4,6 @@ import (
 	"context"
 
 	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
@@ -28,10 +27,8 @@ func (r *BudgetNamespaceReconciler) resourceQuotaToRequests(ctx context.Context,
 			continue
 		}
 		out = append(out, reconcile.Request{
-			NamespacedName: types.NamespacedName{
-				Namespace: list.Items[i].Namespace,
-				Name:      list.Items[i].Name,
-			},
+			Namespace: list.Items[i].Namespace,
+			Name:      list.Items[i].Name,
 		})
 	}
 	return out

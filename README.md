@@ -32,7 +32,7 @@ The operator currently enforces on:
 
 ### Prerequisites
 
-- Go `1.26.1`
+- Go `1.27.0`
 - Docker
 - kubectl
 - Terraform (if using provided infra module)

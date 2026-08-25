@@ -79,10 +79,8 @@ var _ = Describe("BudgetNamespace Controller", func() {
 			err := k8sClient.Get(ctx, typeNamespacedName, budgetnamespace)
 			if err != nil && errors.IsNotFound(err) {
 				resource := &finopsv1alpha1.BudgetNamespace{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      resourceName,
-						Namespace: testBudgetCRNamespace,
-					},
+					Name:      resourceName,
+					Namespace: testBudgetCRNamespace,
 					Spec: finopsv1alpha1.BudgetNamespaceSpec{
 						NamespaceName: testManagedNamespaceName,
 						Labels: map[string]string{
@@ -210,18 +208,14 @@ var _ = Describe("BudgetNamespace Controller", func() {
 
 			By("creating the managed Namespace")
 			expiredNamespace := &corev1.Namespace{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: expiredManagedNamespaceName,
-				},
+				Name: expiredManagedNamespaceName,
 			}
 			Expect(k8sClient.Create(ctx, expiredNamespace)).To(Succeed())
 
 			By("creating the BudgetNamespace with TTL already expired")
 			expiredBudgetNamespace := &finopsv1alpha1.BudgetNamespace{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      expiredCRName,
-					Namespace: testBudgetCRNamespace,
-				},
+				Name:      expiredCRName,
+				Namespace: testBudgetCRNamespace,
 				Spec: finopsv1alpha1.BudgetNamespaceSpec{
 					NamespaceName: expiredManagedNamespaceName,
 					TTL:           "-1h",
@@ -249,10 +243,8 @@ var _ = Describe("BudgetNamespace Controller", func() {
 			}
 
 			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
-				NamespacedName: types.NamespacedName{
-					Name:      expiredCRName,
-					Namespace: testBudgetCRNamespace,
-				},
+				Name:      expiredCRName,
+				Namespace: testBudgetCRNamespace,
 			})
 			Expect(err).NotTo(HaveOccurred())
 
@@ -295,14 +287,12 @@ var _ = Describe("BudgetNamespace Controller", func() {
 			replicas := int32(2)
 			By("creating the managed Namespace and a Deployment")
 			Expect(k8sClient.Create(ctx, &corev1.Namespace{
-				ObjectMeta: metav1.ObjectMeta{Name: graceManagedNS},
+				Name: graceManagedNS,
 			})).To(Succeed())
 
 			Expect(k8sClient.Create(ctx, &appsv1.Deployment{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      testWorkloadName,
-					Namespace: graceManagedNS,
-				},
+				Name:      testWorkloadName,
+				Namespace: graceManagedNS,
 				Spec: appsv1.DeploymentSpec{
 					Replicas: &replicas,
 					Selector: &metav1.LabelSelector{
@@ -324,10 +314,8 @@ var _ = Describe("BudgetNamespace Controller", func() {
 
 			By("creating BudgetNamespace with short TTL and scale-to-zero enforcement")
 			graceBN := &finopsv1alpha1.BudgetNamespace{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      graceCRName,
-					Namespace: testBudgetCRNamespace,
-				},
+				Name:      graceCRName,
+				Namespace: testBudgetCRNamespace,
 				Spec: finopsv1alpha1.BudgetNamespaceSpec{
 					NamespaceName: graceManagedNS,
 					TTL:           "1s",
@@ -357,7 +345,7 @@ var _ = Describe("BudgetNamespace Controller", func() {
 
 			rec := &BudgetNamespaceReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
 			_, err := rec.Reconcile(ctx, reconcile.Request{
-				NamespacedName: types.NamespacedName{Name: graceCRName, Namespace: testBudgetCRNamespace},
+				Name: graceCRName, Namespace: testBudgetCRNamespace,
 			})
 			Expect(err).NotTo(HaveOccurred())
 
@@ -369,7 +357,7 @@ var _ = Describe("BudgetNamespace Controller", func() {
 
 			By("cleanup")
 			_ = k8sClient.Delete(ctx, graceBN)
-			_ = k8sClient.Delete(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: graceManagedNS}})
+			_ = k8sClient.Delete(ctx, &corev1.Namespace{Name: graceManagedNS})
 		})
 
 		It("should scale Deployments to zero when ResourceQuota usage reaches hard limits", func() {
@@ -378,14 +366,12 @@ var _ = Describe("BudgetNamespace Controller", func() {
 
 			replicas := int32(2)
 			Expect(k8sClient.Create(ctx, &corev1.Namespace{
-				ObjectMeta: metav1.ObjectMeta{Name: quotaManagedNS},
+				Name: quotaManagedNS,
 			})).To(Succeed())
 
 			quotaBN := &finopsv1alpha1.BudgetNamespace{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      quotaCRName,
-					Namespace: testBudgetCRNamespace,
-				},
+				Name:      quotaCRName,
+				Namespace: testBudgetCRNamespace,
 				Spec: finopsv1alpha1.BudgetNamespaceSpec{
 					NamespaceName: quotaManagedNS,
 					TTL:           testLongTTL,
@@ -412,15 +398,13 @@ var _ = Describe("BudgetNamespace Controller", func() {
 
 			rec := &BudgetNamespaceReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
 			_, err := rec.Reconcile(ctx, reconcile.Request{
-				NamespacedName: types.NamespacedName{Name: quotaCRName, Namespace: testBudgetCRNamespace},
+				Name: quotaCRName, Namespace: testBudgetCRNamespace,
 			})
 			Expect(err).NotTo(HaveOccurred())
 
 			Expect(k8sClient.Create(ctx, &appsv1.Deployment{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      testWorkloadName,
-					Namespace: quotaManagedNS,
-				},
+				Name:      testWorkloadName,
+				Namespace: quotaManagedNS,
 				Spec: appsv1.DeploymentSpec{
 					Replicas: &replicas,
 					Selector: &metav1.LabelSelector{
@@ -450,7 +434,7 @@ var _ = Describe("BudgetNamespace Controller", func() {
 			Expect(k8sClient.Status().Update(ctx, rq)).To(Succeed())
 
 			_, err = rec.Reconcile(ctx, reconcile.Request{
-				NamespacedName: types.NamespacedName{Name: quotaCRName, Namespace: testBudgetCRNamespace},
+				Name: quotaCRName, Namespace: testBudgetCRNamespace,
 			})
 			Expect(err).NotTo(HaveOccurred())
 
@@ -469,7 +453,7 @@ var _ = Describe("BudgetNamespace Controller", func() {
 
 			By("cleanup")
 			_ = k8sClient.Delete(ctx, quotaBN)
-			_ = k8sClient.Delete(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: quotaManagedNS}})
+			_ = k8sClient.Delete(ctx, &corev1.Namespace{Name: quotaManagedNS})
 		})
 
 		It("should restore Deployments when quota is below hard and restoreOnRecovery is set", func() {
@@ -478,14 +462,12 @@ var _ = Describe("BudgetNamespace Controller", func() {
 
 			replicas := int32(2)
 			Expect(k8sClient.Create(ctx, &corev1.Namespace{
-				ObjectMeta: metav1.ObjectMeta{Name: restoreManagedNS},
+				Name: restoreManagedNS,
 			})).To(Succeed())
 
 			restoreBN := &finopsv1alpha1.BudgetNamespace{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      restoreCRName,
-					Namespace: testBudgetCRNamespace,
-				},
+				Name:      restoreCRName,
+				Namespace: testBudgetCRNamespace,
 				Spec: finopsv1alpha1.BudgetNamespaceSpec{
 					NamespaceName: restoreManagedNS,
 					TTL:           testLongTTL,
@@ -514,15 +496,13 @@ var _ = Describe("BudgetNamespace Controller", func() {
 
 			rec := &BudgetNamespaceReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
 			_, err := rec.Reconcile(ctx, reconcile.Request{
-				NamespacedName: types.NamespacedName{Name: restoreCRName, Namespace: testBudgetCRNamespace},
+				Name: restoreCRName, Namespace: testBudgetCRNamespace,
 			})
 			Expect(err).NotTo(HaveOccurred())
 
 			Expect(k8sClient.Create(ctx, &appsv1.Deployment{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      testWorkloadName,
-					Namespace: restoreManagedNS,
-				},
+				Name:      testWorkloadName,
+				Namespace: restoreManagedNS,
 				Spec: appsv1.DeploymentSpec{
 					Replicas: &replicas,
 					Selector: &metav1.LabelSelector{
@@ -552,7 +532,7 @@ var _ = Describe("BudgetNamespace Controller", func() {
 			Expect(k8sClient.Status().Update(ctx, rq)).To(Succeed())
 
 			_, err = rec.Reconcile(ctx, reconcile.Request{
-				NamespacedName: types.NamespacedName{Name: restoreCRName, Namespace: testBudgetCRNamespace},
+				Name: restoreCRName, Namespace: testBudgetCRNamespace,
 			})
 			Expect(err).NotTo(HaveOccurred())
 
@@ -573,7 +553,7 @@ var _ = Describe("BudgetNamespace Controller", func() {
 			Expect(k8sClient.Status().Update(ctx, rq)).To(Succeed())
 
 			_, err = rec.Reconcile(ctx, reconcile.Request{
-				NamespacedName: types.NamespacedName{Name: restoreCRName, Namespace: testBudgetCRNamespace},
+				Name: restoreCRName, Namespace: testBudgetCRNamespace,
 			})
 			Expect(err).NotTo(HaveOccurred())
 
@@ -587,7 +567,7 @@ var _ = Describe("BudgetNamespace Controller", func() {
 
 			By("cleanup")
 			_ = k8sClient.Delete(ctx, restoreBN)
-			_ = k8sClient.Delete(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: restoreManagedNS}})
+			_ = k8sClient.Delete(ctx, &corev1.Namespace{Name: restoreManagedNS})
 		})
 
 		It("should scale Deployments to zero when cost budget spend exceeds maxSpendUSD", func() {
@@ -596,14 +576,12 @@ var _ = Describe("BudgetNamespace Controller", func() {
 
 			replicas := int32(2)
 			Expect(k8sClient.Create(ctx, &corev1.Namespace{
-				ObjectMeta: metav1.ObjectMeta{Name: costManagedNS},
+				Name: costManagedNS,
 			})).To(Succeed())
 
 			costBN := &finopsv1alpha1.BudgetNamespace{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      costCRName,
-					Namespace: testBudgetCRNamespace,
-				},
+				Name:      costCRName,
+				Namespace: testBudgetCRNamespace,
 				Spec: finopsv1alpha1.BudgetNamespaceSpec{
 					NamespaceName: costManagedNS,
 					TTL:           testLongTTL,
@@ -640,15 +618,13 @@ var _ = Describe("BudgetNamespace Controller", func() {
 				SpendQuerier: &fakeSpendQuerier{v: 2.0},
 			}
 			_, err := rec.Reconcile(ctx, reconcile.Request{
-				NamespacedName: types.NamespacedName{Name: costCRName, Namespace: testBudgetCRNamespace},
+				Name: costCRName, Namespace: testBudgetCRNamespace,
 			})
 			Expect(err).NotTo(HaveOccurred())
 
 			Expect(k8sClient.Create(ctx, &appsv1.Deployment{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      testWorkloadName,
-					Namespace: costManagedNS,
-				},
+				Name:      testWorkloadName,
+				Namespace: costManagedNS,
 				Spec: appsv1.DeploymentSpec{
 					Replicas: &replicas,
 					Selector: &metav1.LabelSelector{
@@ -669,7 +645,7 @@ var _ = Describe("BudgetNamespace Controller", func() {
 			})).To(Succeed())
 
 			_, err = rec.Reconcile(ctx, reconcile.Request{
-				NamespacedName: types.NamespacedName{Name: costCRName, Namespace: testBudgetCRNamespace},
+				Name: costCRName, Namespace: testBudgetCRNamespace,
 			})
 			Expect(err).NotTo(HaveOccurred())
 
@@ -688,7 +664,7 @@ var _ = Describe("BudgetNamespace Controller", func() {
 
 			By("cleanup")
 			_ = k8sClient.Delete(ctx, costBN)
-			_ = k8sClient.Delete(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: costManagedNS}})
+			_ = k8sClient.Delete(ctx, &corev1.Namespace{Name: costManagedNS})
 		})
 	})
 })

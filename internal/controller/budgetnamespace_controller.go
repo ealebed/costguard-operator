@@ -163,9 +163,7 @@ func (r *BudgetNamespaceReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	// - If TTL is expired: delete Namespace after the grace period.
 	if !expired {
 		namespace := &corev1.Namespace{
-			ObjectMeta: metav1.ObjectMeta{
-				Name: budgetNamespace.Spec.NamespaceName,
-			},
+			Name: budgetNamespace.Spec.NamespaceName,
 		}
 
 		_, err := controllerutil.CreateOrPatch(ctx, r.Client, namespace, func() error {
@@ -208,10 +206,8 @@ func (r *BudgetNamespaceReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		podCount := resource.MustParse(fmt.Sprintf("%d", budgetNamespace.Spec.Quota.Pods))
 
 		resourceQuota := &corev1.ResourceQuota{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      resourceQuotaName,
-				Namespace: budgetNamespace.Spec.NamespaceName,
-			},
+			Name:      resourceQuotaName,
+			Namespace: budgetNamespace.Spec.NamespaceName,
 			Spec: corev1.ResourceQuotaSpec{
 				Hard: corev1.ResourceList{
 					corev1.ResourceRequestsCPU:            requestCPU,
@@ -254,10 +250,8 @@ func (r *BudgetNamespaceReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		}
 
 		limitRange := &corev1.LimitRange{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      limitRangeName,
-				Namespace: budgetNamespace.Spec.NamespaceName,
-			},
+			Name:      limitRangeName,
+			Namespace: budgetNamespace.Spec.NamespaceName,
 			Spec: corev1.LimitRangeSpec{
 				Limits: []corev1.LimitRangeItem{
 					{
@@ -389,9 +383,7 @@ func (r *BudgetNamespaceReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	} else if deleting {
 		// TTL expired: delete the Namespace after grace period.
 		namespace := &corev1.Namespace{
-			ObjectMeta: metav1.ObjectMeta{
-				Name: budgetNamespace.Spec.NamespaceName,
-			},
+			Name: budgetNamespace.Spec.NamespaceName,
 		}
 
 		if err := r.Delete(ctx, namespace); err != nil && !apierrors.IsNotFound(err) {
@@ -517,7 +509,7 @@ func (r *BudgetNamespaceReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	if err := r.Status().Update(ctx, &budgetNamespace); err != nil {
 		if apierrors.IsConflict(err) {
 			logger.V(1).Info("status update conflict, requeueing", "name", req.NamespacedName)
-			return ctrl.Result{Requeue: true}, nil
+			return ctrl.Result{RequeueAfter: time.Second}, nil
 		}
 
 		return ctrl.Result{}, fmt.Errorf("update BudgetNamespace status: %w", err)
