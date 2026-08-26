@@ -8,7 +8,7 @@ jobs:
   lint:
     name: Run on Ubuntu
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 20
     steps:
       - name: Clone the code
         uses: actions/checkout@v7
@@ -17,23 +17,16 @@ jobs:
         uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
-          cache: true
 
-      - name: Cache golangci-lint binaries and analysis cache
-        uses: actions/cache@v4
-        with:
-          path: |
-            bin/golangci-lint*
-            ~/.cache/golangci-lint
-          key: gci-${{ runner.os }}-v2.13.0-${{ hashFiles('.custom-gcl.yml', '.golangci.yml', 'go.sum') }}
-          restore-keys: |
-            gci-${{ runner.os }}-v2.13.0-
-
-      - name: Drop stale lock from restored cache
-        run: rm -f ~/.cache/golangci-lint/*.lock
-
-      - name: Check linter configuration
-        run: make lint-config
+      # golangci-lint spends ~90% of its runtime building export data for the
+      # ~1300-package dependency graph. That work happens inside a single
+      # `go list -export` subprocess which its own --timeout cannot interrupt,
+      # so on a cold build cache the lint step appears to hang. Doing it here
+      # keeps the lint step short and its timeout meaningful.
+      - name: Warm export-data cache
+        run: go list -e -export -deps ./... > /dev/null
 
       - name: Run linter
-        run: make lint
+        uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.13.0

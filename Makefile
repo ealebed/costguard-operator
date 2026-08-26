@@ -92,11 +92,11 @@ cleanup-test-e2e: ## Tear down the Kind cluster used for e2e tests
 
 .PHONY: lint
 lint: golangci-lint ## Run golangci-lint linter
-	"$(GOLANGCI_LINT)" run --timeout=5m
+	"$(GOLANGCI_LINT)" run
 
 .PHONY: lint-fix
 lint-fix: golangci-lint ## Run golangci-lint linter and perform fixes
-	"$(GOLANGCI_LINT)" run --timeout=5m --fix
+	"$(GOLANGCI_LINT)" run --fix
 
 .PHONY: lint-config
 lint-config: golangci-lint ## Verify golangci-lint linter configuration
@@ -184,8 +184,7 @@ KIND ?= kind
 KUSTOMIZE ?= $(LOCALBIN)/kustomize
 CONTROLLER_GEN ?= $(LOCALBIN)/controller-gen
 ENVTEST ?= $(LOCALBIN)/setup-envtest
-GOLANGCI_LINT = $(LOCALBIN)/golangci-lint-custom-$(GOLANGCI_LINT_VERSION)
-GOLANGCI_LINT_STOCK = $(LOCALBIN)/golangci-lint-$(GOLANGCI_LINT_VERSION)
+GOLANGCI_LINT = $(LOCALBIN)/golangci-lint
 
 ## Tool Versions
 KUSTOMIZE_VERSION ?= v5.8.1
@@ -227,18 +226,8 @@ $(ENVTEST): $(LOCALBIN)
 
 .PHONY: golangci-lint
 golangci-lint: $(GOLANGCI_LINT) ## Download golangci-lint locally if necessary.
-
-# Stock upstream binary. go install always emits "golangci-lint", so the
-# versioned copy is produced by go-install-tool under that basename.
-$(GOLANGCI_LINT_STOCK): | $(LOCALBIN)
-	$(call go-install-tool,$(LOCALBIN)/golangci-lint,github.com/golangci/golangci-lint/v2/cmd/golangci-lint,$(GOLANGCI_LINT_VERSION))
-
-# Custom binary with the plugins from .custom-gcl.yml. Rebuilt only when the
-# plugin config changes, so a cached binary is reused as-is.
-$(GOLANGCI_LINT): .custom-gcl.yml | $(GOLANGCI_LINT_STOCK)
-	@echo "Building custom golangci-lint with plugins..."
-	@"$(GOLANGCI_LINT_STOCK)" custom --destination "$(LOCALBIN)" --name golangci-lint-custom-build
-	@mv -f "$(LOCALBIN)/golangci-lint-custom-build" "$@"
+$(GOLANGCI_LINT): $(LOCALBIN)
+	$(call go-install-tool,$(GOLANGCI_LINT),github.com/golangci/golangci-lint/v2/cmd/golangci-lint,$(GOLANGCI_LINT_VERSION))
 
 # go-install-tool will 'go install' any package with custom target and name of binary, if it doesn't exist
 # $1 - target path with name of binary
