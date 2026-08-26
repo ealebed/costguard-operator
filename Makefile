@@ -184,7 +184,8 @@ KIND ?= kind
 KUSTOMIZE ?= $(LOCALBIN)/kustomize
 CONTROLLER_GEN ?= $(LOCALBIN)/controller-gen
 ENVTEST ?= $(LOCALBIN)/setup-envtest
-GOLANGCI_LINT = $(LOCALBIN)/golangci-lint
+GOLANGCI_LINT = $(LOCALBIN)/golangci-lint-custom-$(GOLANGCI_LINT_VERSION)
+GOLANGCI_LINT_STOCK = $(LOCALBIN)/golangci-lint-$(GOLANGCI_LINT_VERSION)
 
 ## Tool Versions
 KUSTOMIZE_VERSION ?= v5.8.1
@@ -226,13 +227,18 @@ $(ENVTEST): $(LOCALBIN)
 
 .PHONY: golangci-lint
 golangci-lint: $(GOLANGCI_LINT) ## Download golangci-lint locally if necessary.
-$(GOLANGCI_LINT): $(LOCALBIN) .custom-gcl.yml
+
+# Stock upstream binary. go install always emits "golangci-lint", so the
+# versioned copy is produced by go-install-tool under that basename.
+$(GOLANGCI_LINT_STOCK): | $(LOCALBIN)
 	$(call go-install-tool,$(LOCALBIN)/golangci-lint,github.com/golangci/golangci-lint/v2/cmd/golangci-lint,$(GOLANGCI_LINT_VERSION))
-	@test -f .custom-gcl.yml && { \
-		echo "Building custom golangci-lint with plugins..."; \
-		"$(LOCALBIN)/golangci-lint-$(GOLANGCI_LINT_VERSION)" custom --destination "$(LOCALBIN)" --name golangci-lint-custom; \
-		mv -f "$(LOCALBIN)/golangci-lint-custom" "$@"; \
-	} || true
+
+# Custom binary with the plugins from .custom-gcl.yml. Rebuilt only when the
+# plugin config changes, so a cached binary is reused as-is.
+$(GOLANGCI_LINT): .custom-gcl.yml | $(GOLANGCI_LINT_STOCK)
+	@echo "Building custom golangci-lint with plugins..."
+	@"$(GOLANGCI_LINT_STOCK)" custom --destination "$(LOCALBIN)" --name golangci-lint-custom-build
+	@mv -f "$(LOCALBIN)/golangci-lint-custom-build" "$@"
 
 # go-install-tool will 'go install' any package with custom target and name of binary, if it doesn't exist
 # $1 - target path with name of binary
