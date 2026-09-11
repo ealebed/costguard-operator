@@ -27,6 +27,7 @@ The operator currently enforces on:
 - [API Reference](docs/api-reference.md)
 - [Operations Runbook](docs/runbook.md)
 - [Testing and Validation](docs/testing-and-validation.md)
+- [Dependabot automation](docs/dependabot-automation.md)
 
 ## Quick start
 
