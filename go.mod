@@ -3,7 +3,7 @@ module github.com/ealebed/costguard-operator
 go 1.26.1
 
 require (
-	cloud.google.com/go/bigquery v1.83.0
+	cloud.google.com/go/bigquery v1.84.0
 	github.com/onsi/ginkgo/v2 v2.33.0
 	github.com/onsi/gomega v1.43.1
 	google.golang.org/api v0.298.0
