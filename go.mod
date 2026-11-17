@@ -6,7 +6,7 @@ require (
 	cloud.google.com/go/bigquery v1.86.2
 	github.com/onsi/ginkgo/v2 v2.34.0
 	github.com/onsi/gomega v1.44.0
-	google.golang.org/api v0.314.0
+	google.golang.org/api v0.315.0
 	k8s.io/api v0.37.2
 	k8s.io/apimachinery v0.37.2
 	k8s.io/client-go v0.37.2
